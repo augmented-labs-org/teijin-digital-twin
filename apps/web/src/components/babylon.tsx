@@ -1,65 +1,76 @@
+import { World } from "@/core/world";
 import { Engine, Scene } from "@babylonjs/core";
-import { useCallback, useEffect, useRef, type ComponentProps } from "react";
-import { World } from "../core/world";
+import { useEffect, useRef, type ComponentProps } from "react";
 
-type BabylonWorldProps = ComponentProps<'canvas'>
+type BabylonWorldProps = {
+    onWorldLoad?: (world: World) => void
+} & ComponentProps<'canvas'>
 
-export function BabylonWorld(props: BabylonWorldProps) {
-    const reactCanvas = useRef(null);
-
-    /*
-    
-    */
-
-    const onSceneReady = useCallback((scene: Scene) => {
-        const world = new World(scene)
-    }, [])
-
-    /*
-
-    */
+export function BabylonWorld({ onWorldLoad, ...props }: BabylonWorldProps) {
+    const canvasRef = useRef<HTMLCanvasElement>(null);
 
     useEffect(() => {
-        const canvas = reactCanvas.current
+        const canvas = canvasRef.current
 
         if (!canvas) {
-            return;
+            return
         }
 
-        const engine = new Engine(canvas, true, {
+        const engine = new Engine(canvas, true, {}, true)
+        const scene = new Scene(engine)
 
-        }, true);
-
-        const scene = new Scene(engine, {
-
-        });
+        const onSceneReady = (scene: Scene) => {
+            const world = new World(scene)
+            world.load().then(() => {
+                if (scene.isDisposed) {
+                    return
+                }
+                
+                onWorldLoad?.(world)
+            })
+        }
 
         if (scene.isReady()) {
-            onSceneReady(scene);
+            onSceneReady(scene)
         } else {
-            scene.onReadyObservable.addOnce((scene) => onSceneReady(scene));
+            scene.onReadyObservable.addOnce(onSceneReady)
         }
 
         engine.runRenderLoop(() => {
-            scene.render();
-        });
+            scene.render()
+        })
 
         const resize = () => {
-            scene.getEngine().resize();
-        };
-
-        if (window) {
-            window.addEventListener("resize", resize);
+            engine.resize()
         }
 
-        return () => {
-            scene.getEngine().dispose();
+        window.addEventListener("resize", resize)
 
-            if (window) {
-                window.removeEventListener("resize", resize);
+        const toggleInspector = async () => {
+            if (scene.debugLayer.isVisible()) {
+                scene.debugLayer.hide()
+                return
             }
-        };
-    }, []);
 
-    return <canvas ref={reactCanvas} {...props} />;
+            await import("@babylonjs/inspector")
+            scene.debugLayer.show({ overlay: true })
+        }
+
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "o") {
+                event.preventDefault()
+                toggleInspector()
+            }
+        }
+
+        window.addEventListener("keydown", onKeyDown)
+
+        return () => {
+            window.removeEventListener("resize", resize)
+            window.removeEventListener("keydown", onKeyDown)
+            engine.dispose()
+        }
+    }, [canvasRef, onWorldLoad])
+
+    return <canvas ref={canvasRef} {...props} />;
 }

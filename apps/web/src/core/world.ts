@@ -1,12 +1,30 @@
-import { Color3, DirectionalLight, HemisphericLight, MeshBuilder, ShadowGenerator, StandardMaterial, Vector3, type Scene } from "@babylonjs/core";
-import { MapCamera } from "./map-camera";
+import { type AbstractMesh, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, Matrix, MeshBuilder, Observer, ShadowGenerator, Vector3, Viewport, type Scene, BoundingSphere } from "@babylonjs/core";
+import { GridMaterial } from "@babylonjs/materials";
+import { Building } from "./building/building";
+import { MapCamera } from "./camera/map-camera";
+import { useSelection } from "./selection/use-selection";
 
 export class World {
 
-    private scene: Scene
+    public scene: Scene
+
+    public buildings: Building[] = []
+
+    public focusedBuilding: Building | null = null
+
+    /*
+
+    */
+
+    private _onAfterCameraRender?: Observer<Camera>
+
+    /*
+
+    */
 
     constructor(scene: Scene) {
         this.scene = scene
+        scene.clearColor = Color4.FromColor3(Color3.White());
 
         const camera = new MapCamera('camera', scene)
         camera.attachControl()
@@ -25,15 +43,75 @@ export class World {
         shadowGenerator.blurKernel = 32
         shadowGenerator.setDarkness(0.35)
 
-        const groundMat = new StandardMaterial('groundMat', this.scene)
-        groundMat.diffuseColor = Color3.FromHexString('#fbfaf8')
-        groundMat.specularColor = Color3.Black()
+        this._onAfterCameraRender = scene.onAfterRenderCameraObservable.add(this._afterCameraRender)
+        scene.onDisposeObservable.add(this._dispose)
+    }
 
-        const ground = MeshBuilder.CreateGround('ground', { width: 4000, height: 4000 }, this.scene)
-        
+    async load() {
+        const groundMat = new GridMaterial("groundMaterial", this.scene);
+        groundMat.mainColor = Color3.White()
+        groundMat.lineColor = Color3.Black()
+
+        const ground = MeshBuilder.CreateGround('ground', { width: 80, height: 80 }, this.scene)
+
         ground.material = groundMat
-        ground.receiveShadows = true
-        ground.position.y = -0.05
+
+        try {
+            const model = await ImportMeshAsync("/models/building.glb", this.scene)
+            const rootNode = model.meshes[0]!
+
+            this.buildings.push({
+                name: 'building',
+                rootNode,
+                floors: [
+                    { name: 'floor_0', node: this.scene.getNodeByName('floor_0')! },
+                    { name: 'floor_1', node: this.scene.getNodeByName('floor_1')! },
+                    { name: 'floor_2', node: this.scene.getNodeByName('floor_2')! },
+                ]
+            })
+        } catch (err) {
+            if (this.scene.isDisposed) {
+                return
+            }
+
+            throw err
+        }
+    }
+
+    private _dispose = () => {
+        this._onAfterCameraRender?.remove()
+        this._onAfterCameraRender = undefined
+    }
+
+    /*
+
+    */
+
+    private _afterCameraRender = (camera: Camera) => {
+        let maximumCoverage = -1;
+        let maximumBuilding: Building | undefined = undefined
+
+        for (const building of this.buildings) {
+            const root = building.rootNode
+            const { min, max } = root.getHierarchyBoundingVectors(true)
+            const bSphere = new BoundingSphere(min, max)
+
+            const distanceToCamera = camera.mode === Camera.ORTHOGRAPHIC_CAMERA ? camera.minZ : bSphere.centerWorld.subtract(camera.globalPosition).length();
+
+            const screenArea = camera.screenArea;
+            let meshArea = (bSphere.radiusWorld * camera.minZ) / distanceToCamera;
+            meshArea = meshArea * meshArea * Math.PI;
+
+            const compareValue = meshArea / screenArea;
+            if (compareValue > maximumCoverage) {
+                maximumCoverage = compareValue
+                maximumBuilding = building
+            }
+        }
+
+        const selectedBuildingThreshold = 0.15;
+        const selectBuilding = useSelection.getState().selectBuilding
+        selectBuilding(maximumCoverage > selectedBuildingThreshold ? maximumBuilding : undefined)
     }
 
 }

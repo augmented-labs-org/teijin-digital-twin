@@ -11,16 +11,21 @@
   },
   "dependencies": {
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
-    "@workspace/typescript-config": "workspace:*",
-    "@workspace/ui": "workspace:*",
+    "@babylonjs/core": "^9.17.0",
+    "@babylonjs/inspector": "^9.17.0",
+    "@babylonjs/loaders": "^9.17.0",
+    "@babylonjs/materials": "^9.17.0",
+    "@tailwindcss/vite": "^4",
     "@types/node": "^24.13.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@tailwindcss/vite": "^4",
     "@vitejs/plugin-react": "^6.0.3",
+    "@workspace/typescript-config": "workspace:*",
+    "@workspace/ui": "workspace:*",
     "oxlint": "^1.71.0",
     "typescript": "~6.0.2",
     "vite": "^8.1.1"
