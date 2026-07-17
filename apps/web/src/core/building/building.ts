@@ -9,4 +9,6 @@ export type Building = {
     name: string
     floors: BuildingFloor[],
     rootNode: AbstractMesh
+    /** Index of the topmost visible floor; floors above it are hidden. */
+    visibleFloor: number
 }

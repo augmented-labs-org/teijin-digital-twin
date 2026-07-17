@@ -1,34 +1,16 @@
-/* eslint-disable react-refresh/only-export-components */
 import type { World } from "@/core/world"
-import * as React from "react"
+import { create } from "zustand"
 
-type WorldProviderProps = {
+type WorldStore = {
     world: World | undefined
-    children: React.ReactNode
+    setWorld: (world: World | undefined) => void
 }
 
-type WorldProviderState = {
-    world: World | undefined
-}
-
-const WorldProviderContext = React.createContext<WorldProviderState | undefined>(
-    undefined
-)
-
-export function WorldProvider({ world, children }: WorldProviderProps) {
-    return (
-        <WorldProviderContext.Provider value={{ world }}>
-            {children}
-        </WorldProviderContext.Provider>
-    )
-}
-
-export const useWorld = () => {
-    const context = React.useContext(WorldProviderContext)
-
-    if (context === undefined) {
-        throw new Error("useWorld must be used within a WorldProvider")
-    }
-
-    return context
-}
+/**
+ * Holds the Babylon world instance for the React layer. The world itself is the
+ * source of truth; this store just makes the instance reactively available.
+ */
+export const useWorld = create<WorldStore>((set) => ({
+    world: undefined,
+    setWorld: (world) => set({ world }),
+}))

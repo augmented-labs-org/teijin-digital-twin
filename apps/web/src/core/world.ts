@@ -1,8 +1,7 @@
-import { type AbstractMesh, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, Matrix, MeshBuilder, Observer, ShadowGenerator, Vector3, Viewport, type Scene, BoundingSphere } from "@babylonjs/core";
+import { Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, MeshBuilder, Observable, Observer, ShadowGenerator, Vector3, type Scene, BoundingSphere } from "@babylonjs/core";
 import { GridMaterial } from "@babylonjs/materials";
 import { Building } from "./building/building";
 import { MapCamera } from "./camera/map-camera";
-import { useSelection } from "./selection/use-selection";
 
 export class World {
 
@@ -10,7 +9,10 @@ export class World {
 
     public buildings: Building[] = []
 
-    public focusedBuilding: Building | null = null
+    public focusedBuilding: Building | undefined = undefined
+
+    /** Fires when the camera-focused building changes. The React layer bridges this into the store. */
+    public readonly onFocusChanged = new Observable<Building | undefined>()
 
     /*
 
@@ -60,14 +62,17 @@ export class World {
             const model = await ImportMeshAsync("/models/building.glb", this.scene)
             const rootNode = model.meshes[0]!
 
+            const floors = [
+                { name: 'floor_0', node: this.scene.getNodeByName('floor_0')! },
+                { name: 'floor_1', node: this.scene.getNodeByName('floor_1')! },
+                { name: 'floor_2', node: this.scene.getNodeByName('floor_2')! },
+            ]
+
             this.buildings.push({
                 name: 'building',
                 rootNode,
-                floors: [
-                    { name: 'floor_0', node: this.scene.getNodeByName('floor_0')! },
-                    { name: 'floor_1', node: this.scene.getNodeByName('floor_1')! },
-                    { name: 'floor_2', node: this.scene.getNodeByName('floor_2')! },
-                ]
+                floors,
+                visibleFloor: floors.length - 1,
             })
         } catch (err) {
             if (this.scene.isDisposed) {
@@ -81,6 +86,29 @@ export class World {
     private _dispose = () => {
         this._onAfterCameraRender?.remove()
         this._onAfterCameraRender = undefined
+        this.onFocusChanged.clear()
+    }
+
+    /*
+    Commands — the imperative surface the React layer calls into. UI never touches
+    the scene graph directly; it issues commands here.
+    */
+
+    /** Show every floor up to and including `floor`; hide the ones above it. */
+    setVisibleFloor(building: Building, floor: number) {
+        building.visibleFloor = floor
+        for (let i = 0; i < building.floors.length; i++) {
+            building.floors[i]!.node.setEnabled(i <= floor)
+        }
+    }
+
+    private _setFocusedBuilding(next: Building | undefined) {
+        if (next === this.focusedBuilding) {
+            return
+        }
+
+        this.focusedBuilding = next
+        this.onFocusChanged.notifyObservers(next)
     }
 
     /*
@@ -110,8 +138,7 @@ export class World {
         }
 
         const selectedBuildingThreshold = 0.15;
-        const selectBuilding = useSelection.getState().selectBuilding
-        selectBuilding(maximumCoverage > selectedBuildingThreshold ? maximumBuilding : undefined)
+        this._setFocusedBuilding(maximumCoverage > selectedBuildingThreshold ? maximumBuilding : undefined)
     }
 
 }
