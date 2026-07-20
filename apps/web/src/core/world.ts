@@ -1,6 +1,8 @@
-import { Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, MeshBuilder, Observable, Observer, ShadowGenerator, Vector3, type Scene, BoundingSphere } from "@babylonjs/core";
+import { BoundingSphere, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, MeshBuilder, Observable, Observer, ShadowGenerator, Vector3, type Scene } from "@babylonjs/core";
+import { AdvancedDynamicTexture } from "@babylonjs/gui";
 import { GridMaterial } from "@babylonjs/materials";
-import { Building } from "./building/building";
+import { Building, BuildingEquipment, BuildingFloor, BuildingRoom } from "./building/building";
+import { BuildingHighlight } from "./building/building-highlight";
 import { MapCamera } from "./camera/map-camera";
 
 export class World {
@@ -19,6 +21,16 @@ export class World {
     */
 
     private _onAfterCameraRender?: Observer<Camera>
+
+    /** The one shared fullscreen GUI layer. All label features attach controls here. */
+    public readonly gui: AdvancedDynamicTexture
+
+    /**
+     * Translucent box + name label drawn around a focused building. Each building gets its own
+     * instance so the outgoing building can fade out in place while the incoming one fades in,
+     * instead of one shared box jumping between them.
+     */
+    private readonly _highlights = new Map<Building, BuildingHighlight>()
 
     /*
 
@@ -45,6 +57,8 @@ export class World {
         shadowGenerator.blurKernel = 32
         shadowGenerator.setDarkness(0.35)
 
+        this.gui = AdvancedDynamicTexture.CreateFullscreenUI("worldUI", true, scene)
+
         this._onAfterCameraRender = scene.onAfterRenderCameraObservable.add(this._afterCameraRender)
         scene.onDisposeObservable.add(this._dispose)
     }
@@ -59,40 +73,53 @@ export class World {
         ground.material = groundMat
 
         try {
-            const model = await ImportMeshAsync("/models/building.glb", this.scene)
-            const rootNode = model.meshes[0]!
+            const buildingModel = await ImportMeshAsync("/models/building.glb", this.scene)
+            const buildingRootNode = buildingModel.meshes[0]!
 
-            const floors = [
-                { name: 'floor_0', node: this.scene.getNodeByName('floor_0')! },
-                { name: 'floor_1', node: this.scene.getNodeByName('floor_1')! },
-                { name: 'floor_2', node: this.scene.getNodeByName('floor_2')! },
+            const floor2Rooms: BuildingRoom[] = [
+                {
+                    name: 'Horto', node: buildingModel.meshes.find(x => x.name === 'Room 1')!, equipments: [
+                        { name: 'Arbusto', node: buildingModel.meshes.find(x => x.name === 'Bush_07')!, online: true, running: false, errored: false }
+                    ]
+                },
+                { name: 'Stand', node: buildingModel.meshes.find(x => x.name === 'Room 2')!, equipments: [
+                        { name: 'Porsche', node: buildingModel.meshes.find(x => x.name === 'Car_16')!, online: false, running: false, errored: false },
+                        { name: 'Lamborghini', node: buildingModel.meshes.find(x => x.name === 'Car_16.001')!, online: true, running: false, errored: true, errorReason: 'No engine' }
+                ] },
+                { name: 'Room 3', node: buildingModel.meshes.find(x => x.name === 'Room 3')!, equipments: [] },
             ]
 
+            const buildingFloors: BuildingFloor[] = [
+                { name: 'Floor 0', node: buildingModel.transformNodes.find(x => x.name === 'Floor 0')!, rooms: [] },
+                { name: 'Floor 1', node: buildingModel.transformNodes.find(x => x.name === 'Floor 1')!, rooms: [] },
+                { name: 'Floor 2', node: buildingModel.transformNodes.find(x => x.name === 'Floor 2')!, rooms: floor2Rooms },
+            ]
+
+            buildingFloors.flatMap(f => f.rooms).forEach(r => {
+                r.node.visibility = 0;
+            })
+
             this.buildings.push({
-                name: 'building',
-                rootNode,
-                floors,
-                visibleFloor: floors.length - 1,
+                name: `Building`,
+                rootNode: buildingRootNode,
+                floors: buildingFloors,
+                visibleFloor: buildingFloors.length - 1,
             })
         } catch (err) {
-            if (this.scene.isDisposed) {
-                return
+            if (!this.scene.isDisposed) {
+                throw err
             }
-
-            throw err
         }
     }
 
     private _dispose = () => {
         this._onAfterCameraRender?.remove()
         this._onAfterCameraRender = undefined
+        this._highlights.forEach(highlight => highlight.dispose())
+        this._highlights.clear()
+        this.gui.dispose()
         this.onFocusChanged.clear()
     }
-
-    /*
-    Commands — the imperative surface the React layer calls into. UI never touches
-    the scene graph directly; it issues commands here.
-    */
 
     /** Show every floor up to and including `floor`; hide the ones above it. */
     setVisibleFloor(building: Building, floor: number) {
@@ -105,6 +132,19 @@ export class World {
     private _setFocusedBuilding(next: Building | undefined) {
         if (next === this.focusedBuilding) {
             return
+        }
+
+        const previous = this.focusedBuilding
+        if (previous) {
+            const previousHighlight = this._highlights.get(previous)
+            previousHighlight?.hide(() => {
+                // Only tear down if `previous` hasn't become the focused building again
+                // while it was fading out.
+                if (this.focusedBuilding !== previous) {
+                    previousHighlight.dispose()
+                    this._highlights.delete(previous)
+                }
+            })
         }
 
         this.focusedBuilding = next

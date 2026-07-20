@@ -10,12 +10,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "motion": "^12.42.2",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@babylonjs/core": "^9.17.0",
+    "@babylonjs/gui": "^9.17.0",
     "@babylonjs/inspector": "^9.17.0",
     "@babylonjs/loaders": "^9.17.0",
     "@babylonjs/materials": "^9.17.0",
