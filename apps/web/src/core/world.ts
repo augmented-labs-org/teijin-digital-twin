@@ -1,8 +1,8 @@
-import { BoundingSphere, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, MeshBuilder, Observable, Observer, ShadowGenerator, Vector3, type Scene } from "@babylonjs/core";
+import { BoundingSphere, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, MeshBuilder, NodeMaterialDefines, Observable, Observer, ShadowGenerator, Vector3, type Scene } from "@babylonjs/core";
 import { AdvancedDynamicTexture } from "@babylonjs/gui";
 import { GridMaterial } from "@babylonjs/materials";
-import { Building, BuildingEquipment, BuildingFloor, BuildingRoom } from "./building/building";
-import { BuildingHighlight } from "./building/building-highlight";
+import { Building, BuildingFloor, BuildingRoom } from "./building/building";
+import { EquipmentTag } from "./building/equipment";
 import { MapCamera } from "./camera/map-camera";
 
 export class World {
@@ -25,12 +25,8 @@ export class World {
     /** The one shared fullscreen GUI layer. All label features attach controls here. */
     public readonly gui: AdvancedDynamicTexture
 
-    /**
-     * Translucent box + name label drawn around a focused building. Each building gets its own
-     * instance so the outgoing building can fade out in place while the incoming one fades in,
-     * instead of one shared box jumping between them.
-     */
-    private readonly _highlights = new Map<Building, BuildingHighlight>()
+    /** One screen-space tag per equipment, anchored to its mesh on the shared GUI layer. */
+    private readonly _equipmentTags: EquipmentTag[] = []
 
     /*
 
@@ -57,7 +53,7 @@ export class World {
         shadowGenerator.blurKernel = 32
         shadowGenerator.setDarkness(0.35)
 
-        this.gui = AdvancedDynamicTexture.CreateFullscreenUI("worldUI", true, scene)
+        this.gui = AdvancedDynamicTexture.CreateFullscreenUI("worldUI", true, scene, undefined, true)
 
         this._onAfterCameraRender = scene.onAfterRenderCameraObservable.add(this._afterCameraRender)
         scene.onDisposeObservable.add(this._dispose)
@@ -83,11 +79,12 @@ export class World {
                     ]
                 },
                 { name: 'Stand', node: buildingModel.meshes.find(x => x.name === 'Room 2')!, equipments: [
-                        { name: 'Porsche', node: buildingModel.meshes.find(x => x.name === 'Car_16')!, online: false, running: false, errored: false },
-                        { name: 'Lamborghini', node: buildingModel.meshes.find(x => x.name === 'Car_16.001')!, online: true, running: false, errored: true, errorReason: 'No engine' }
+                        { name: 'Porsche', node: buildingModel.transformNodes.find(x => x.name === 'Car_16')!, online: false, running: false, errored: false },
+                        { name: 'Lamborghini', node: buildingModel.transformNodes.find(x => x.name === 'Car_16.001')!, online: true, running: false, errored: true, errorReason: 'No engine' }
                 ] },
                 { name: 'Room 3', node: buildingModel.meshes.find(x => x.name === 'Room 3')!, equipments: [] },
             ]
+            console.log(floor2Rooms)
 
             const buildingFloors: BuildingFloor[] = [
                 { name: 'Floor 0', node: buildingModel.transformNodes.find(x => x.name === 'Floor 0')!, rooms: [] },
@@ -99,12 +96,17 @@ export class World {
                 r.node.visibility = 0;
             })
 
-            this.buildings.push({
+            const building: Building = {
                 name: `Building`,
                 rootNode: buildingRootNode,
                 floors: buildingFloors,
                 visibleFloor: buildingFloors.length - 1,
-            })
+            }
+            this.buildings.push(building)
+
+            for (const equipment of building.floors.flatMap(f => f.rooms).flatMap(r => r.equipments)) {
+                this._equipmentTags.push(new EquipmentTag(equipment, this.gui, this.scene))
+            }
         } catch (err) {
             if (!this.scene.isDisposed) {
                 throw err
@@ -115,8 +117,8 @@ export class World {
     private _dispose = () => {
         this._onAfterCameraRender?.remove()
         this._onAfterCameraRender = undefined
-        this._highlights.forEach(highlight => highlight.dispose())
-        this._highlights.clear()
+        this._equipmentTags.forEach(tag => tag.dispose())
+        this._equipmentTags.length = 0
         this.gui.dispose()
         this.onFocusChanged.clear()
     }
@@ -132,19 +134,6 @@ export class World {
     private _setFocusedBuilding(next: Building | undefined) {
         if (next === this.focusedBuilding) {
             return
-        }
-
-        const previous = this.focusedBuilding
-        if (previous) {
-            const previousHighlight = this._highlights.get(previous)
-            previousHighlight?.hide(() => {
-                // Only tear down if `previous` hasn't become the focused building again
-                // while it was fading out.
-                if (this.focusedBuilding !== previous) {
-                    previousHighlight.dispose()
-                    this._highlights.delete(previous)
-                }
-            })
         }
 
         this.focusedBuilding = next

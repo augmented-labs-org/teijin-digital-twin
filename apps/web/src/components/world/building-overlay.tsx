@@ -45,27 +45,31 @@ export function BuildingOverlay() {
             </AnimatePresence>
         </div>
 
-        <div className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 right-0">
-            <AnimatePresence>
-                {building && (
-                    <motion.div
-                        className="transform p-3 py-4 bg-primary/50 rounded-full h-80"
-                        variants={variants}
-                        initial="hiddenRight"
-                        animate="visible"
-                        exit="hiddenRight">
-                        <LayerSlider
-                            value={floor}
-                            onValueChange={(values) => updateFloor(values as number)}
-                            orientation="vertical"
-                            thumbAlignment="center"
-                            min={0}
-                            max={building.floors.length - 1}
-                            step={1}
-                        />
-                    </motion.div>
-                )}
-            </AnimatePresence>
+        <div className="absolute top-0 bottom-0 right-0 pointer-events-none">
+            <div className="flex flex-col justify-center items-center h-full p-8">
+                <div className="pointer-events-auto h-full max-h-80">
+                    <AnimatePresence>
+                        {building && (
+                            <motion.div
+                                className="transform p-3 py-4 bg-primary/50 rounded-full h-full"
+                                variants={variants}
+                                initial="hiddenRight"
+                                animate="visible"
+                                exit="hiddenRight">
+                                <LayerSlider
+                                    value={floor}
+                                    onValueChange={(values) => updateFloor(values as number)}
+                                    orientation="vertical"
+                                    thumbAlignment="center"
+                                    min={0}
+                                    max={building.floors.length - 1}
+                                    step={1}
+                                />
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+                </div>
+            </div>
         </div>
     </>
 }

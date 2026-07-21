@@ -10,7 +10,7 @@ export function App() {
   useWorldStoreSync()
 
   return (
-    <div className="flex flex-col md:flex-row h-screen w-full relative">
+    <div className="flex flex-col md:flex-row h-dvh w-full relative">
       <BabylonWorld onWorldLoad={setWorld} className="flex-1 min-w-0 outline-0" />
 
       {world && <BuildingOverlay />}
