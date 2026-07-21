@@ -13,10 +13,10 @@ const variants = {
 export function BuildingOverlay() {
     const world = useWorld((s) => s.world)
     const building = useSelection(store => store.building)
-    const [floor, setFloor] = useState(() => building?.visibleFloor ?? 0)
+    const [floor, setFloor] = useState(() => building?.activeFloor ?? 0)
 
     useEffect(() => {
-        setFloor(building?.visibleFloor ?? 0)
+        setFloor(building?.activeFloor ?? 0)
     }, [building])
 
     const updateFloor = useCallback((floor: number) => {

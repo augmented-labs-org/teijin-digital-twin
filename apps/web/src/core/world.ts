@@ -1,9 +1,12 @@
-import { BoundingSphere, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, MeshBuilder, NodeMaterialDefines, Observable, Observer, ShadowGenerator, Vector3, type Scene } from "@babylonjs/core";
+import { ActionManager, BoundingSphere, Camera, Color3, Color4, DirectionalLight, Engine, ExecuteCodeAction, HemisphericLight, ImportMeshAsync, MeshBuilder, NodeMaterialDefines, Observable, Observer, ShadowGenerator, Vector3, type Scene } from "@babylonjs/core";
+import { installPriorityPicking, PICK_PRIORITY, setPickPriority } from "./building/pick-priority";
 import { AdvancedDynamicTexture } from "@babylonjs/gui";
-import { GridMaterial } from "@babylonjs/materials";
-import { Building, BuildingFloor, BuildingRoom } from "./building/building";
+import { CustomMaterial, GridMaterial } from "@babylonjs/materials";
+import { Building, BuildingEquipment, BuildingFloor } from "./building/building";
 import { EquipmentTag } from "./building/equipment";
 import { MapCamera } from "./camera/map-camera";
+import { RoomMaterial } from "./shaders/roomShader";
+import { getLocalBoundingBox } from "./utils/bounds";
 
 export class World {
 
@@ -35,6 +38,10 @@ export class World {
     constructor(scene: Scene) {
         this.scene = scene
         scene.clearColor = Color4.FromColor3(Color3.White());
+
+        // Resolve pointer picks by priority (equipment over the room enclosing it)
+        // rather than raw depth. Global + idempotent; harmless to unmarked meshes.
+        installPriorityPicking()
 
         const camera = new MapCamera('camera', scene)
         camera.attachControl()
@@ -72,47 +79,62 @@ export class World {
             const buildingModel = await ImportMeshAsync("/models/building.glb", this.scene)
             const buildingRootNode = buildingModel.meshes[0]!
 
-            const floor2Rooms: BuildingRoom[] = [
-                {
-                    name: 'Horto', node: buildingModel.meshes.find(x => x.name === 'Room 1')!, equipments: [
-                        { name: 'Arbusto', node: buildingModel.meshes.find(x => x.name === 'Bush_07')!, online: true, running: false, errored: false }
-                    ]
-                },
-                { name: 'Stand', node: buildingModel.meshes.find(x => x.name === 'Room 2')!, equipments: [
-                        { name: 'Porsche', node: buildingModel.transformNodes.find(x => x.name === 'Car_16')!, online: false, running: false, errored: false },
-                        { name: 'Lamborghini', node: buildingModel.transformNodes.find(x => x.name === 'Car_16.001')!, online: true, running: false, errored: true, errorReason: 'No engine' }
-                ] },
-                { name: 'Room 3', node: buildingModel.meshes.find(x => x.name === 'Room 3')!, equipments: [] },
-            ]
-            console.log(floor2Rooms)
+            const building = new Building('Building', buildingRootNode)
 
-            const buildingFloors: BuildingFloor[] = [
-                { name: 'Floor 0', node: buildingModel.transformNodes.find(x => x.name === 'Floor 0')!, rooms: [] },
-                { name: 'Floor 1', node: buildingModel.transformNodes.find(x => x.name === 'Floor 1')!, rooms: [] },
-                { name: 'Floor 2', node: buildingModel.transformNodes.find(x => x.name === 'Floor 2')!, rooms: floor2Rooms },
-            ]
+            building.addFloor('Floor 0', buildingModel.transformNodes.find(x => x.name === 'Floor 0')!)
+            building.addFloor('Floor 1', buildingModel.transformNodes.find(x => x.name === 'Floor 1')!)
+            const floor2 = building.addFloor('Floor 2', buildingModel.transformNodes.find(x => x.name === 'Floor 2')!)
 
-            buildingFloors.flatMap(f => f.rooms).forEach(r => {
-                r.node.visibility = 0;
+            const horto = floor2.addRoom('Horto', buildingModel.meshes.find(x => x.name === 'Room 1')!)
+            horto.addEquipment({ name: 'Arbusto', node: buildingModel.meshes.find(x => x.name === 'Bush_07')!, online: true, running: false, errored: false })
+
+            const stand = floor2.addRoom('Stand', buildingModel.meshes.find(x => x.name === 'Room 2')!)
+            stand.addEquipment({ name: 'Porsche', node: buildingModel.transformNodes.find(x => x.name === 'Car_16')!, online: false, running: false, errored: false })
+            stand.addEquipment({ name: 'Lamborghini', node: buildingModel.transformNodes.find(x => x.name === 'Car_16.001')!, online: true, running: false, errored: true, errorReason: 'No engine' })
+
+            floor2.addRoom('Room 3', buildingModel.meshes.find(x => x.name === 'Room 3')!)
+
+            // Since the rooms are defined in the 3d model, we need to hide the "bounds mesh".
+            building.floors.flatMap(f => f.rooms).forEach(r => {
+                const mat = new RoomMaterial("TestCubeMaterial", this.scene)
+
+                const { min: localMin, max: localMax } = getLocalBoundingBox(r.node)
+                console.log(localMin, localMax)
+
+                mat.alpha = 0.5
+
+                mat.setup(localMin.y, localMax.y, new Color3(0, 1, 1))
+                r.node.material = mat
+
+                // The room reacts to clicks through the same action-manager system
+                // as equipment; the world only biases which mesh wins the pick.
+                setPickPriority([r.node], PICK_PRIORITY.ROOM)
+                r.node.actionManager ??= new ActionManager(this.scene)
+                r.node.actionManager.registerAction(
+                    new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {
+                        console.log(r.name)
+                    }),
+                )
             })
 
-            const building: Building = {
-                name: `Building`,
-                rootNode: buildingRootNode,
-                floors: buildingFloors,
-                visibleFloor: buildingFloors.length - 1,
-            }
+            building.activeFloor = building.floors.length - 1
+
             this.buildings.push(building)
 
             for (const equipment of building.floors.flatMap(f => f.rooms).flatMap(r => r.equipments)) {
                 this._equipmentTags.push(new EquipmentTag(equipment, this.gui, this.scene))
             }
+
         } catch (err) {
             if (!this.scene.isDisposed) {
                 throw err
             }
         }
     }
+
+    /*
+
+    */
 
     private _dispose = () => {
         this._onAfterCameraRender?.remove()
@@ -125,7 +147,7 @@ export class World {
 
     /** Show every floor up to and including `floor`; hide the ones above it. */
     setVisibleFloor(building: Building, floor: number) {
-        building.visibleFloor = floor
+        building.activeFloor = floor
         for (let i = 0; i < building.floors.length; i++) {
             building.floors[i]!.node.setEnabled(i <= floor)
         }
@@ -136,7 +158,16 @@ export class World {
             return
         }
 
+        if (this.focusedBuilding) {
+            this.focusedBuilding.active = false
+        }
+
         this.focusedBuilding = next
+
+        if (this.focusedBuilding) {
+            this.focusedBuilding.active = true
+        }
+
         this.onFocusChanged.notifyObservers(next)
     }
 

@@ -1,4 +1,4 @@
-import { EventState, Observer, RotationGizmo, Scene, TransformNode, Vector3 } from "@babylonjs/core"
+import { AbstractMesh, ActionManager, EventState, ExecuteCodeAction, Observer, RotationGizmo, Scene, TransformNode, Vector3 } from "@babylonjs/core"
 import {
     AdvancedDynamicTexture,
     Control,
@@ -9,6 +9,7 @@ import {
     Vector2WithInfo,
 } from "@babylonjs/gui"
 import { BuildingEquipment } from "./building"
+import { PICK_PRIORITY, setPickPriority } from "./pick-priority"
 import { guiPadding } from "../utils/gui"
 
 type EquipmentStatus = "online" | "offline" | "error"
@@ -92,6 +93,8 @@ export class EquipmentTag {
         this._runningRow = detail.runningRow
         this._errorRow = detail.errorRow
 
+        this._makeMeshInteractive()
+
         this._renderObserver = scene.onBeforeRenderObservable.add(this._update)
     }
 
@@ -101,6 +104,11 @@ export class EquipmentTag {
         this._icon.dispose()
         this._label.dispose()
         this._detail.dispose()
+
+        for (const mesh of this._meshes()) {
+            mesh.actionManager?.dispose()
+            mesh.actionManager = null
+        }
     }
 
     /*
@@ -238,7 +246,7 @@ export class EquipmentTag {
         control.hoverCursor = "pointer"
         control.alpha = 0
         control.isVisible = false
-        control.onPointerClickObservable.add(this._toggleExpanded)
+        control.onPointerClickObservable.add(this._onControlClick)
     }
 
     private _attach(control: Control) {
@@ -247,12 +255,42 @@ export class EquipmentTag {
         control.linkOffsetYInPixels = LINK_OFFSET_Y
     }
 
-    private _toggleExpanded = (_ignored: Vector2WithInfo, state: EventState) => {
+    /** Fully faded-out controls still receive pointer events; ignore clicks on those. */
+    private _onControlClick = (_ignored: Vector2WithInfo, state: EventState) => {
         if (state.currentTarget instanceof Control && state.currentTarget.alpha < 1) {
             return
         }
 
+        this._toggleExpanded()
+    }
+
+    private _toggleExpanded() {
         this._expanded = !this._expanded
+    }
+
+    /** Every mesh under the equipment's node (the equipment may be a single mesh or a group) toggles the detail card on click. */
+    private _makeMeshInteractive() {
+        setPickPriority(this._meshes(), PICK_PRIORITY.EQUIPMENT)
+        for (const mesh of this._meshes()) {
+            mesh.isPickable = true
+            mesh.actionManager ??= new ActionManager(this.scene)
+            mesh.actionManager.registerAction(
+                new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {
+                    console.log('picked')
+                    this._toggleExpanded()
+                }),
+            )
+            mesh.actionManager.registerAction(
+                new ExecuteCodeAction(ActionManager.OnPointerOverTrigger, () => {
+                    this.scene.hoverCursor = "pointer"
+                }),
+            )
+        }
+    }
+
+    private _meshes(): AbstractMesh[] {
+        const meshes = this._node instanceof AbstractMesh ? [this._node] : []
+        return [...meshes, ...this._node.getChildMeshes(false)]
     }
 
     /*
@@ -269,11 +307,9 @@ export class EquipmentTag {
 
         this._syncContent()
 
-        const distance = Vector3.Distance(this._node.getAbsolutePosition(), camera.globalPosition)
-
         // 2 = full label, 1 = icon only, 0 = hidden. Equipment on a hidden
         // floor is treated as fully out of view.
-        let lod = distance <= LABEL_DISTANCE ? 2 : distance <= ICON_DISTANCE ? 1 : 0
+        let lod = this.equipment.active ? 2 : 1
         if (!this._node.isEnabled()) {
             lod = 0
         }
