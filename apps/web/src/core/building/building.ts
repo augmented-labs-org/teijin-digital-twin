@@ -10,7 +10,7 @@ interface BuildingEquipmentInit {
 }
 
 export class BuildingEquipment {
-    readonly room: BuildingRoom
+    readonly room: BuildingArea
     name: string
     node: TransformNode
     online: boolean
@@ -18,7 +18,7 @@ export class BuildingEquipment {
     errored: boolean
     errorReason?: string
 
-    constructor(room: BuildingRoom, params: BuildingEquipmentInit) {
+    constructor(room: BuildingArea, params: BuildingEquipmentInit) {
         this.room = room
         this.name = params.name
         this.node = params.node
@@ -45,7 +45,7 @@ export class BuildingEquipment {
 
 */
 
-export class BuildingRoom {
+export class BuildingArea {
 
     readonly floor: BuildingFloor
     readonly equipments: BuildingEquipment[] = []
@@ -88,7 +88,7 @@ export class BuildingFloor {
     readonly floor: number
     readonly name: string
     readonly node: Node
-    readonly rooms: BuildingRoom[] = []
+    readonly areas: BuildingArea[] = []
 
     constructor(building: Building, floor: number, name: string, node: Node) {
         this.building = building
@@ -97,9 +97,9 @@ export class BuildingFloor {
         this.node = node
     }
 
-    addRoom(name: string, node: AbstractMesh): BuildingRoom {
-        const room = new BuildingRoom(this, name, node)
-        this.rooms.push(room)
+    addArea(name: string, node: AbstractMesh): BuildingArea {
+        const room = new BuildingArea(this, name, node)
+        this.areas.push(room)
         return room
     }
 

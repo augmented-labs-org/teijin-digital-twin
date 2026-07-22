@@ -30,7 +30,7 @@ Effect.ShadersStore["roomFragmentShader"] = `
     }
 `;
 
-export class RoomMaterial extends ShaderMaterial {
+export class AreaMaterial extends ShaderMaterial {
     constructor(name: string, scene: Scene) {
         super(name, scene, {
             vertex: "room",

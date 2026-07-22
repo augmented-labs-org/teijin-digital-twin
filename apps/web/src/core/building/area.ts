@@ -1,23 +1,23 @@
 import { Scene } from "@babylonjs/core"
 import { AdvancedDynamicTexture, StackPanel } from "@babylonjs/gui"
-import { BuildingRoom } from "./building"
+import { BuildingArea } from "./building"
 import { PICK_PRIORITY } from "./pick-priority"
 import { TagStatus, WorldTag } from "./tag"
 
 /**
- * A {@link WorldTag} for a single {@link BuildingRoom}. A room has no intrinsic
+ * A {@link WorldTag} for a single {@link BuildingArea}. A room has no intrinsic
  * status, so it is derived from the equipment it contains: an error takes
  * precedence, then any equipment online marks the room online, otherwise it is
  * offline (including when the room has no equipment). The detail card adds
  * equipment-count rows and an error row.
  */
-export class RoomTag extends WorldTag {
+export class AreaTag extends WorldTag {
     protected readonly idPrefix = "room"
     protected readonly linkOffsetY = -60
     protected readonly pickPriority = PICK_PRIORITY.ROOM
 
     constructor(
-        private readonly room: BuildingRoom,
+        private readonly room: BuildingArea,
         gui: AdvancedDynamicTexture,
         scene: Scene,
     ) {

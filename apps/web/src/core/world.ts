@@ -4,9 +4,9 @@ import { AdvancedDynamicTexture } from "@babylonjs/gui";
 import { CustomMaterial, GridMaterial } from "@babylonjs/materials";
 import { Building, BuildingEquipment, BuildingFloor } from "./building/building";
 import { EquipmentTag } from "./building/equipment";
-import { RoomTag } from "./building/room";
+import { AreaTag } from "./building/area";
 import { MapCamera } from "./camera/map-camera";
-import { RoomMaterial } from "./shaders/roomShader";
+import { AreaMaterial } from "./shaders/areaShader";
 import { getLocalBoundingBox } from "./utils/bounds";
 
 export class World {
@@ -37,7 +37,7 @@ export class World {
     private readonly _equipmentTags: EquipmentTag[] = []
 
     /** One screen-space tag per room, anchored to its mesh on the shared GUI layer. */
-    private readonly _roomTags: RoomTag[] = []
+    private readonly _areaTags: AreaTag[] = []
 
     /*
 
@@ -94,25 +94,24 @@ export class World {
             building.addFloor('Floor 1', buildingModel.transformNodes.find(x => x.name === 'Floor 1')!)
             const floor2 = building.addFloor('Floor 2', buildingModel.transformNodes.find(x => x.name === 'Floor 2')!)
 
-            const horto = floor2.addRoom('Horto', buildingModel.meshes.find(x => x.name === 'Room 1')!)
+            const horto = floor2.addArea('Horto', buildingModel.meshes.find(x => x.name === 'Room 1')!)
             horto.addEquipment({ name: 'Arbusto', node: buildingModel.meshes.find(x => x.name === 'Bush_07')!, online: true, running: false, errored: false })
 
-            const stand = floor2.addRoom('Stand', buildingModel.meshes.find(x => x.name === 'Room 2')!)
+            const stand = floor2.addArea('Stand', buildingModel.meshes.find(x => x.name === 'Room 2')!)
             stand.addEquipment({ name: 'Porsche', node: buildingModel.transformNodes.find(x => x.name === 'Car_16')!, online: false, running: false, errored: false })
             stand.addEquipment({ name: 'Lamborghini', node: buildingModel.transformNodes.find(x => x.name === 'Car_16.001')!, online: true, running: false, errored: true, errorReason: 'No engine' })
 
-            floor2.addRoom('Room 3', buildingModel.meshes.find(x => x.name === 'Room 3')!)
+            floor2.addArea('Room 3', buildingModel.meshes.find(x => x.name === 'Room 3')!)
 
             // Since the rooms are defined in the 3d model, we need to hide the "bounds mesh".
-            building.floors.flatMap(f => f.rooms).forEach(r => {
-                const mat = new RoomMaterial("TestCubeMaterial", this.scene)
+            building.floors.flatMap(f => f.areas).forEach(r => {
+                const mat = new AreaMaterial("TestCubeMaterial", this.scene)
 
-                const { min: localMin, max: localMax } = getLocalBoundingBox(r.node)
-                console.log(localMin, localMax)
+                const { min: localMin } = getLocalBoundingBox(r.node)
 
                 mat.alpha = 0.5
 
-                mat.setup(localMin.y, localMax.y, new Color3(0, 1, 1))
+                mat.setup(localMin.y, localMin.y + 0.5, new Color3(0, 1, 1))
                 r.node.material = mat
 
                 // The room reacts to clicks through the same action-manager system
@@ -130,11 +129,11 @@ export class World {
 
             this.buildings.push(building)
 
-            for (const room of building.floors.flatMap(f => f.rooms)) {
-                this._roomTags.push(new RoomTag(room, this.gui, this.scene))
+            for (const area of building.floors.flatMap(f => f.areas)) {
+                this._areaTags.push(new AreaTag(area, this.gui, this.scene))
             }
 
-            for (const equipment of building.floors.flatMap(f => f.rooms).flatMap(r => r.equipments)) {
+            for (const equipment of building.floors.flatMap(f => f.areas).flatMap(r => r.equipments)) {
                 this._equipmentTags.push(new EquipmentTag(equipment, this.gui, this.scene))
             }
 
@@ -154,8 +153,8 @@ export class World {
         this._onAfterCameraRender = undefined
         this._equipmentTags.forEach(tag => tag.dispose())
         this._equipmentTags.length = 0
-        this._roomTags.forEach(tag => tag.dispose())
-        this._roomTags.length = 0
+        this._areaTags.forEach(tag => tag.dispose())
+        this._areaTags.length = 0
         this.gui.dispose()
         this.outlineLayer.dispose()
         this.onFocusChanged.clear()
