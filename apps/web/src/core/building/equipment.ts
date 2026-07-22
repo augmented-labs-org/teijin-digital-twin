@@ -1,53 +1,65 @@
-import { Scene } from "@babylonjs/core"
-import { AdvancedDynamicTexture, StackPanel } from "@babylonjs/gui"
-import { BuildingEquipment } from "./building"
+import { TransformNode } from "@babylonjs/core"
+import type { Area } from "./area"
+import type { Building, Floor } from "./building"
+import { Entity, TagBody } from "./entity"
 import { PICK_PRIORITY } from "./pick-priority"
-import { TagStatus, WorldTag } from "./tag"
+import { TagStatus } from "./tag"
+
+export interface EquipmentInit {
+    name: string
+    node: TransformNode
+    online?: boolean
+    running?: boolean
+    errored?: boolean
+    errorReason?: string
+}
 
 /**
- * A {@link WorldTag} for a single {@link BuildingEquipment}. Status comes
- * straight off the equipment; the detail card adds a "Running" row and an error
- * row.
+ * An {@link Entity} for a single piece of equipment. Its status comes straight
+ * off its own state; the detail card adds a "Running" row and an error row.
  */
-export class EquipmentTag extends WorldTag {
-    protected readonly idPrefix = "equipment"
-    protected readonly linkOffsetY = -22
-    protected readonly pickPriority = PICK_PRIORITY.EQUIPMENT
+export class Equipment extends Entity<TransformNode> {
+    readonly idPrefix = "equipment"
+    readonly linkOffsetY = -22
+    readonly pickPriority = PICK_PRIORITY.EQUIPMENT
 
-    constructor(
-        private readonly equipment: BuildingEquipment,
-        gui: AdvancedDynamicTexture,
-        scene: Scene,
-    ) {
-        super(equipment.node, gui, scene)
-        this.init()
+    readonly area: Area
+    online: boolean
+    running: boolean
+    errored: boolean
+    errorReason?: string
+
+    constructor(area: Area, params: EquipmentInit) {
+        super(params.name, params.node, area.floor)
+
+        this.area = area
+        this.online = params.online ?? false
+        this.running = params.running ?? false
+        this.errored = params.errored ?? false
+        this.errorReason = params.errorReason
     }
 
-    protected get name() {
-        return this.equipment.name
+    get building(): Building {
+        return this.area.building
     }
 
-    protected get active() {
-        return this.equipment.active
-    }
-
-    protected get status(): TagStatus {
-        if (this.equipment.errored) {
+    get status(): TagStatus {
+        if (this.errored) {
             return "error"
         }
-        return this.equipment.online ? "online" : "offline"
+        return this.online ? "online" : "offline"
     }
 
-    protected buildDetailBody(panel: StackPanel): (color: string) => void {
-        const runningRow = this.detailRow(panel)
-        const errorRow = this.errorRow(panel)
+    buildDetailBody(body: TagBody): (color: string) => void {
+        const runningRow = body.infoRow()
+        const errorRow = body.errorRow()
 
         return () => {
-            runningRow.text = `Running: ${this.equipment.running ? "Yes" : "No"}`
+            runningRow.text = `Running: ${this.running ? "Yes" : "No"}`
 
-            errorRow.isVisible = this.equipment.errored
-            if (this.equipment.errored) {
-                errorRow.text = this.equipment.errorReason ?? "Unknown error"
+            errorRow.isVisible = this.errored
+            if (this.errored) {
+                errorRow.text = this.errorReason ?? "Unknown error"
             }
         }
     }

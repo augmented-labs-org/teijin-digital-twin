@@ -1,94 +1,18 @@
-import { AbstractMesh, Node, TransformNode } from "@babylonjs/core"
-
-interface BuildingEquipmentInit {
-    name: string
-    node: TransformNode
-    online?: boolean
-    running?: boolean
-    errored?: boolean
-    errorReason?: string
-}
-
-export class BuildingEquipment {
-    readonly room: BuildingArea
-    name: string
-    node: TransformNode
-    online: boolean
-    running: boolean
-    errored: boolean
-    errorReason?: string
-
-    constructor(room: BuildingArea, params: BuildingEquipmentInit) {
-        this.room = room
-        this.name = params.name
-        this.node = params.node
-        this.online = params.online ?? false
-        this.running = params.running ?? false
-        this.errored = params.errored ?? false
-        this.errorReason = params.errorReason
-    }
-
-    get floor(): BuildingFloor {
-        return this.room.floor
-    }
-
-    get building(): Building {
-        return this.room.building
-    }
-
-    get active() {
-        return this.room.active
-    }
-}
+import { AbstractMesh, Node } from "@babylonjs/core"
+import { Area } from "./area"
+import { Entity } from "./entity"
+import { World } from "../world"
 
 /*
 
 */
 
-export class BuildingArea {
-
-    readonly floor: BuildingFloor
-    readonly equipments: BuildingEquipment[] = []
-
-    name: string
-    node: AbstractMesh
-
-    constructor(floor: BuildingFloor, name: string, node: AbstractMesh) {
-        this.floor = floor
-        this.name = name
-        this.node = node
-    }
-
-    get building(): Building {
-        return this.floor.building
-    }
-
-    addEquipment(params: BuildingEquipmentInit): BuildingEquipment {
-        const equipment = new BuildingEquipment(this, params)
-        this.equipments.push(equipment)
-        return equipment
-    }
-
-    /*
-
-    */
-
-    get active() {
-        return this.floor.active
-    }
-}
-
-/*
-
-*/
-
-
-export class BuildingFloor {
+export class Floor {
     readonly building: Building
     readonly floor: number
     readonly name: string
     readonly node: Node
-    readonly areas: BuildingArea[] = []
+    readonly areas: Area[] = []
 
     constructor(building: Building, floor: number, name: string, node: Node) {
         this.building = building
@@ -97,18 +21,10 @@ export class BuildingFloor {
         this.node = node
     }
 
-    addArea(name: string, node: AbstractMesh): BuildingArea {
-        const room = new BuildingArea(this, name, node)
-        this.areas.push(room)
-        return room
-    }
-
-    /*
-    
-    */
-
-    get active() {
-        return this.building.active && this.floor <= this.building.activeFloor
+    addArea(name: string, node: AbstractMesh): Area {
+        const area = new Area(this, name, node)
+        this.areas.push(area)
+        return area
     }
 }
 
@@ -117,23 +33,25 @@ export class BuildingFloor {
 */
 
 export class Building {
-    readonly floors: BuildingFloor[] = []
+    readonly world: World
+    readonly floors: Floor[] = []
     readonly name: string
     readonly rootNode: AbstractMesh
 
-    /// Indicates if the building is currently active in the user-interface
-    active: boolean = false
+    /// Indicates if the building is currently focused in the user-interface
+    focused: boolean = false
 
     /// Indicates which floor is currently active in the user-interface. Floors below are also considered active
     activeFloor: number = 0
 
-    constructor(name: string, rootNode: AbstractMesh) {
+    constructor(world: World, name: string, rootNode: AbstractMesh) {
+        this.world = world
         this.name = name
         this.rootNode = rootNode
     }
 
-    addFloor(name: string, node: Node): BuildingFloor {
-        const floor = new BuildingFloor(this, this.floors.length, name, node)
+    addFloor(name: string, node: Node): Floor {
+        const floor = new Floor(this, this.floors.length, name, node)
         this.floors.push(floor)
         return floor
     }

@@ -1,13 +1,42 @@
-import { ActionManager, BoundingSphere, Camera, Color3, Color4, DirectionalLight, Engine, ExecuteCodeAction, HemisphericLight, ImportMeshAsync, MeshBuilder, NodeMaterialDefines, Observable, Observer, SelectionOutlineLayer, ShadowGenerator, Vector3, type Scene } from "@babylonjs/core";
-import { installPriorityPicking, PICK_PRIORITY, setPickPriority } from "./building/pick-priority";
+import { ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, MeshBuilder, Observable, Observer, SelectionOutlineLayer, ShadowGenerator, TimerState, Vector3, type Scene } from "@babylonjs/core";
 import { AdvancedDynamicTexture } from "@babylonjs/gui";
-import { CustomMaterial, GridMaterial } from "@babylonjs/materials";
-import { Building, BuildingEquipment, BuildingFloor } from "./building/building";
-import { EquipmentTag } from "./building/equipment";
-import { AreaTag } from "./building/area";
+import { GridMaterial } from "@babylonjs/materials";
+import { Building } from "./building/building";
+import { Entity } from "./building/entity";
+import { installPriorityPicking } from "./building/pick-priority";
 import { MapCamera } from "./camera/map-camera";
-import { AreaMaterial } from "./shaders/areaShader";
-import { getLocalBoundingBox } from "./utils/bounds";
+import { smoothDampFloat, smoothDampVector3 } from "./utils/smooth-damp";
+
+export class EntityGroup {
+    readonly world: World
+    readonly name: string
+    readonly entities: Entity[]
+
+    private _active = false
+
+    constructor(world: World, name: string, entities: Entity[]) {
+        this.world = world
+        this.name = name
+        this.entities = entities
+    }
+
+    get active() {
+        return this._active
+    }
+
+    set active(val: boolean) {
+        if (val === this._active) {
+            return
+        }
+
+        if (!this.active && this.world.focusedEntity && this.entities.includes(this.world.focusedEntity)) {
+            this.world.focusedEntity = undefined
+        }
+
+        this._active = val
+        this.world.onEntityGroupActiveChanged.notifyObservers(this)
+    }
+}
 
 export class World {
 
@@ -15,16 +44,33 @@ export class World {
 
     public buildings: Building[] = []
 
-    public focusedBuilding: Building | undefined = undefined
+    public entityGroups: EntityGroup[] = []
 
-    /** Fires when the camera-focused building changes. The React layer bridges this into the store. */
-    public readonly onFocusChanged = new Observable<Building | undefined>()
+    /*
+
+    */
+
+    private _focusedBuilding: Building | undefined = undefined
+
+    public readonly onFocusBuildingChanged = new Observable<Building | undefined>()
+
+    private _focusedEntity: Entity | undefined = undefined
+
+    public readonly onFocusEntityChanged = new Observable<Entity | undefined>()
+
+    public readonly onEntityGroupActiveChanged = new Observable<EntityGroup>()
 
     /*
 
     */
 
     private _onAfterCameraRender?: Observer<Camera>
+
+    private _cameraFocusObserver: Observer<Scene> | null = null
+    private _cameraFocusTargetGoal: Vector3 | null = null
+    private _cameraFocusRadiusGoal: number | null = null
+    private _cameraTargetVelocity = Vector3.Zero()
+    private _cameraRadiusVelocity = 0
 
     /** The one shared fullscreen GUI layer. All label features attach controls here. */
     public readonly gui: AdvancedDynamicTexture
@@ -33,11 +79,8 @@ export class World {
 
     //
 
-    /** One screen-space tag per equipment, anchored to its mesh on the shared GUI layer. */
-    private readonly _equipmentTags: EquipmentTag[] = []
-
-    /** One screen-space tag per room, anchored to its mesh on the shared GUI layer. */
-    private readonly _areaTags: AreaTag[] = []
+    /** Every attached entity (areas + equipment); each owns its tag and features. */
+    private readonly _entities: Entity[] = []
 
     /*
 
@@ -69,7 +112,11 @@ export class World {
         shadowGenerator.setDarkness(0.35)
 
         this.gui = AdvancedDynamicTexture.CreateFullscreenUI("worldUI", true, scene, undefined, true)
+
         this.outlineLayer = new SelectionOutlineLayer("worldSelectionOutline", this.scene)
+        this.outlineLayer.outlineColor = new Color3(0.1, 0.1, 0.1);
+        this.outlineLayer.outlineThickness = 2.0;
+        this.outlineLayer.occlusionStrength = 0;
 
         this._onAfterCameraRender = scene.onAfterRenderCameraObservable.add(this._afterCameraRender)
         scene.onDisposeObservable.add(this._dispose)
@@ -85,57 +132,58 @@ export class World {
         ground.material = groundMat
 
         try {
-            const buildingModel = await ImportMeshAsync("/models/building.glb", this.scene)
+            const buildingModel = await ImportMeshAsync("/models/factory.glb", this.scene)
             const buildingRootNode = buildingModel.meshes[0]!
 
-            const building = new Building('Building', buildingRootNode)
+            const building = new Building(this, 'Factory', buildingRootNode)
 
-            building.addFloor('Floor 0', buildingModel.transformNodes.find(x => x.name === 'Floor 0')!)
-            building.addFloor('Floor 1', buildingModel.transformNodes.find(x => x.name === 'Floor 1')!)
-            const floor2 = building.addFloor('Floor 2', buildingModel.transformNodes.find(x => x.name === 'Floor 2')!)
+            const floor = building.addFloor("Floor 0", buildingModel.meshes.find(x => x.name === 'Floor 0')!)
 
-            const horto = floor2.addArea('Horto', buildingModel.meshes.find(x => x.name === 'Room 1')!)
-            horto.addEquipment({ name: 'Arbusto', node: buildingModel.meshes.find(x => x.name === 'Bush_07')!, online: true, running: false, errored: false })
-
-            const stand = floor2.addArea('Stand', buildingModel.meshes.find(x => x.name === 'Room 2')!)
-            stand.addEquipment({ name: 'Porsche', node: buildingModel.transformNodes.find(x => x.name === 'Car_16')!, online: false, running: false, errored: false })
-            stand.addEquipment({ name: 'Lamborghini', node: buildingModel.transformNodes.find(x => x.name === 'Car_16.001')!, online: true, running: false, errored: true, errorReason: 'No engine' })
-
-            floor2.addArea('Room 3', buildingModel.meshes.find(x => x.name === 'Room 3')!)
-
-            // Since the rooms are defined in the 3d model, we need to hide the "bounds mesh".
-            building.floors.flatMap(f => f.areas).forEach(r => {
-                const mat = new AreaMaterial("TestCubeMaterial", this.scene)
-
-                const { min: localMin } = getLocalBoundingBox(r.node)
-
-                mat.alpha = 0.5
-
-                mat.setup(localMin.y, localMin.y + 0.5, new Color3(0, 1, 1))
-                r.node.material = mat
-
-                // The room reacts to clicks through the same action-manager system
-                // as equipment; the world only biases which mesh wins the pick.
-                setPickPriority([r.node], PICK_PRIORITY.ROOM)
-                r.node.actionManager ??= new ActionManager(this.scene)
-                r.node.actionManager.registerAction(
-                    new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {
-                        console.log(r.name)
-                    }),
-                )
-            })
+            const areaEntrance = floor.addArea('Entrance', buildingModel.meshes.find(x => x.name === 'Area 1 - Entrance')!);
+            const areaWarehouse1 = floor.addArea('Warehouse 1', buildingModel.meshes.find(x => x.name === 'Area 2 - Warehouse 1')!);
+            const areaWarehouse2 = floor.addArea('Warehouse 2', buildingModel.meshes.find(x => x.name === 'Area 3 - Warehouse 2')!);
+            const areaFactory = floor.addArea('Factory', buildingModel.meshes.find(x => x.name === 'Area 4 - Factory')!);
+            const areaLab1 = floor.addArea('Lab 1', buildingModel.meshes.find(x => x.name === 'Area 5 - Lab 1')!);
+            const areaLab2 = floor.addArea('Lab 2', buildingModel.meshes.find(x => x.name === 'Area 6 - Lab 2')!);
+            const areaLab3 = floor.addArea('Lab 3', buildingModel.meshes.find(x => x.name === 'Area 7 - Lab 3')!);
+            const areaDressingRoom = floor.addArea('dressing room', buildingModel.meshes.find(x => x.name === 'Area 8 - dressing room')!);
+            const areaPantry = floor.addArea('Pantry', buildingModel.meshes.find(x => x.name === 'Area 9 - Pantry')!);
+            const areaWc1 = floor.addArea('WC 1', buildingModel.meshes.find(x => x.name === 'Area 10 - WC 1')!);
+            const areaWc2 = floor.addArea('WC 2', buildingModel.meshes.find(x => x.name === 'Area 11 - WC 2')!);
+            const areaOffice1 = floor.addArea('Office 1', buildingModel.meshes.find(x => x.name === 'Area 12 - Office 1')!);
+            const areaOffice2 = floor.addArea('Office 2', buildingModel.meshes.find(x => x.name === 'Area 13 - Office 2')!);
+            const areaOffice3 = floor.addArea('Office 3', buildingModel.meshes.find(x => x.name === 'Area 14 - Office 3')!);
+            const areaOffice4 = floor.addArea('Office 4', buildingModel.meshes.find(x => x.name === 'Area 15 - Office 4')!);
 
             building.activeFloor = building.floors.length - 1
 
             this.buildings.push(building)
 
-            for (const area of building.floors.flatMap(f => f.areas)) {
-                this._areaTags.push(new AreaTag(area, this.gui, this.scene))
+            // Attach every area and its equipment. Each entity builds its own tag
+            // and render features (an area's zone fade, ...) and self-manages them.
+            const areas = building.floors.flatMap(f => f.areas)
+            for (const entity of [...areas, ...areas.flatMap(a => a.equipments)]) {
+                entity.attach(this.gui, this.scene)
+                this._entities.push(entity)
             }
 
-            for (const equipment of building.floors.flatMap(f => f.areas).flatMap(r => r.equipments)) {
-                this._equipmentTags.push(new EquipmentTag(equipment, this.gui, this.scene))
-            }
+            this.entityGroups.push(new EntityGroup(this, 'Areas', [
+                areaEntrance,
+                areaWarehouse1,
+                areaWarehouse2,
+                areaFactory,
+                areaLab1,
+                areaLab2,
+                areaLab3,
+                areaDressingRoom,
+                areaPantry,
+                areaWc1,
+                areaWc2,
+                areaOffice1,
+                areaOffice2,
+                areaOffice3,
+                areaOffice4
+            ]))
 
         } catch (err) {
             if (!this.scene.isDisposed) {
@@ -151,13 +199,13 @@ export class World {
     private _dispose = () => {
         this._onAfterCameraRender?.remove()
         this._onAfterCameraRender = undefined
-        this._equipmentTags.forEach(tag => tag.dispose())
-        this._equipmentTags.length = 0
-        this._areaTags.forEach(tag => tag.dispose())
-        this._areaTags.length = 0
+        this._cameraFocusObserver?.remove()
+        this._cameraFocusObserver = null
+        this._entities.forEach(entity => entity.dispose())
+        this._entities.length = 0
         this.gui.dispose()
         this.outlineLayer.dispose()
-        this.onFocusChanged.clear()
+        this.onFocusBuildingChanged.clear()
     }
 
     /** Show every floor up to and including `floor`; hide the ones above it. */
@@ -168,22 +216,152 @@ export class World {
         }
     }
 
-    private _setFocusedBuilding(next: Building | undefined) {
-        if (next === this.focusedBuilding) {
+    /*
+
+    */
+
+    get focusedBuilding() {
+        return this._focusedBuilding
+    }
+
+    set focusedBuilding(next: Building | undefined) {
+        if (next === this._focusedBuilding) {
             return
         }
 
-        if (this.focusedBuilding) {
-            this.focusedBuilding.active = false
+        if (this._focusedBuilding) {
+            this._focusedBuilding.focused = false
         }
 
-        this.focusedBuilding = next
+        this._focusedBuilding = next
 
-        if (this.focusedBuilding) {
-            this.focusedBuilding.active = true
+        if (this._focusedBuilding) {
+            this._focusedBuilding.focused = true
         }
 
-        this.onFocusChanged.notifyObservers(next)
+        if (this.focusedEntity && this.focusedEntity.floor.building !== next) {
+            this.focusedEntity = undefined
+        }
+
+        this.onFocusBuildingChanged.notifyObservers(next)
+    }
+
+    get focusedEntity() {
+        return this._focusedEntity
+    }
+
+    set focusedEntity(next: Entity | undefined) {
+        if (next === this._focusedEntity) {
+            return
+        }
+
+        if (this._focusedEntity) {
+            this._focusedEntity.focused = false
+        }
+
+        this._focusedEntity = next
+
+        if (this._focusedEntity) {
+            this._focusedEntity.focused = true
+        }
+
+        this.onFocusEntityChanged.notifyObservers(next)
+
+        if (this._focusedEntity) {
+            this.moveCameraToFocusedEntity()
+        }
+    }
+
+    /*
+
+    */
+
+    /** Smoothly pan/zoom the active camera so the focused entity's bounds fill the viewport. */
+    moveCameraToFocusedEntity() {
+        const entity = this._focusedEntity
+        const camera = this.scene.activeCamera
+        if (!entity || !(camera instanceof ArcRotateCamera)) {
+            return
+        }
+
+        const { min, max } = entity.node.getHierarchyBoundingVectors(true)
+        const center = min.add(max).scale(0.5)
+
+        // Same frustum-fitting formula ArcRotateCamera.zoomOn uses internally, so the
+        // entity's bounding sphere ends up fully inside the viewport on both axes.
+        const aspectRatio = this.scene.getEngine().getAspectRatio(camera)
+        const verticalSlope = Math.tan(camera.fov / 2)
+        const horizontalSlope = verticalSlope * aspectRatio
+
+        const boundingRadius = Vector3.Distance(min, max) * 0.5
+        const distanceForVertical = boundingRadius * Math.sqrt(1 + 1 / (verticalSlope * verticalSlope))
+        const distanceForHorizontal = boundingRadius * Math.sqrt(1 + 1 / (horizontalSlope * horizontalSlope))
+
+        const framingPadding = 1.3
+        const rawRadius = Math.max(distanceForVertical, distanceForHorizontal) * framingPadding
+        const targetRadius = Math.min(
+            Math.max(rawRadius, camera.lowerRadiusLimit ?? 0),
+            camera.upperRadiusLimit ?? rawRadius,
+        )
+
+        this._animateCameraTo(camera, center, targetRadius)
+    }
+
+    /**
+     * Pursues `target`/`radius` with a critically-damped spring rather than a fixed keyframe
+     * animation. Re-targeting mid-flight (e.g. focusing a new entity before the previous focus
+     * finished) just updates the goal the spring chases next frame, so velocity stays continuous
+     * and the camera doesn't stutter/snap the way restarting a keyframe animation from rest would.
+     */
+    private _animateCameraTo(camera: ArcRotateCamera, target: Vector3, radius: number) {
+        this._cameraFocusTargetGoal = target.clone()
+        this._cameraFocusRadiusGoal = radius
+
+        if (this._cameraFocusObserver) {
+            return
+        }
+
+        camera.detachControl()
+
+        const smoothTime = 0.4
+
+        this._cameraFocusObserver = this.scene.onBeforeRenderObservable.add(() => {
+            const targetGoal = this._cameraFocusTargetGoal
+            const radiusGoal = this._cameraFocusRadiusGoal
+            if (targetGoal === null || radiusGoal === null) {
+                return
+            }
+
+            const dt = this.scene.getEngine().getDeltaTime() / 1000
+            if (dt <= 0) {
+                return
+            }
+
+            const [newTarget, newTargetVelocity] = smoothDampVector3(camera.target, targetGoal, this._cameraTargetVelocity, smoothTime, dt)
+            camera.target = newTarget
+            this._cameraTargetVelocity = newTargetVelocity
+
+            const [newRadius, newRadiusVelocity] = smoothDampFloat(camera.radius, radiusGoal, this._cameraRadiusVelocity, smoothTime, dt)
+            camera.radius = newRadius
+            this._cameraRadiusVelocity = newRadiusVelocity
+
+            const targetSettled = Vector3.DistanceSquared(camera.target, targetGoal) < 1e-3 && newTargetVelocity.lengthSquared() < 1e-3
+            const radiusSettled = Math.abs(camera.radius - radiusGoal) < 1e-2 && Math.abs(newRadiusVelocity) < 1e-2
+
+            if (targetSettled && radiusSettled) {
+                camera.target = targetGoal.clone()
+                camera.radius = radiusGoal
+
+                this._cameraFocusObserver?.remove()
+                this._cameraFocusObserver = null
+                this._cameraFocusTargetGoal = null
+                this._cameraFocusRadiusGoal = null
+                this._cameraTargetVelocity = Vector3.Zero()
+                this._cameraRadiusVelocity = 0
+
+                camera.attachControl()
+            }
+        })
     }
 
     /*
@@ -213,7 +391,7 @@ export class World {
         }
 
         const selectedBuildingThreshold = 0.15;
-        this._setFocusedBuilding(maximumCoverage > selectedBuildingThreshold ? maximumBuilding : undefined)
+        this.focusedBuilding = maximumCoverage > selectedBuildingThreshold ? maximumBuilding : undefined
     }
 
 }

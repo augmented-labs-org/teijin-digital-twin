@@ -1,4 +1,4 @@
-import { AbstractMesh, ActionManager, EventState, ExecuteCodeAction, Node, Observer, Scene, TransformNode, Vector3 } from "@babylonjs/core"
+import { AbstractMesh, ActionManager, EventState, ExecuteCodeAction, Observer, Scene, TransformNode, Vector3 } from "@babylonjs/core"
 import {
     AdvancedDynamicTexture,
     Control,
@@ -8,14 +8,15 @@ import {
     TextBlock,
     Vector2WithInfo,
 } from "@babylonjs/gui"
-import { setPickPriority } from "./pick-priority"
 import { guiPadding } from "../utils/gui"
+import type { Entity, TagBody } from "./entity"
+import { setPickPriority } from "./pick-priority"
 
 /** A tag's headline state, shown as an accent color and a status line. */
 export type TagStatus = "online" | "offline" | "error"
 
 /** Border/accent color per status. Green online, dark gray offline, red error. */
-export const STATUS_COLOR: Record<TagStatus, string> = {
+const STATUS_COLOR: Record<TagStatus, string> = {
     online: "#22c55e",
     offline: "#374151",
     error: "#ef4444",
@@ -43,81 +44,47 @@ const ANIM_SPEED = 14
 const DETAIL_Z_BOOST = 1_000_000
 
 /**
- * A screen-space tag anchored to a scene node, attached to the world's shared
- * GUI layer.
+ * A screen-space tag anchored to an {@link Entity}, attached to the world's
+ * shared GUI layer. One class serves every kind of entity — the entity supplies
+ * what varies.
  *
- * Behaviour (identical for every subclass):
+ * Behaviour:
  *  - By default shows a name pill with a status-colored border.
- *  - Distance/activity-driven LOD: full label when active, a status dot when
- *    inactive, nothing when the node is disabled.
+ *  - Distance/activity-driven LOD: full label when the entity is active, a
+ *    status dot when inactive, nothing when the node is disabled.
  *  - Clicking the label (or dot, or the node's meshes) expands an animated
  *    detail card; clicking again collapses it.
  *
- * The tag drives its own per-frame update via a scene observer, so callers only
- * need to construct it and {@link dispose} it.
- *
- * Subclasses supply the target-specific bits: {@link name}, {@link active},
- * {@link status}, the pick priority / link offset / id prefix constants, and the
- * variable rows of the detail card via {@link buildDetailBody}. They MUST call
- * {@link init} at the end of their constructor (after their own fields are set).
+ * The tag reads everything it needs off the entity — {@link Entity.name},
+ * {@link Entity.active}, {@link Entity.status}, the pick priority / link offset /
+ * id prefix, and the variable rows via {@link Entity.buildDetailBody} — and
+ * drives its own per-frame update via a scene observer, so callers only need to
+ * construct it and {@link dispose} it.
  */
-export abstract class WorldTag {
-    protected readonly node: TransformNode
+export class EntityTag {
+    private readonly node: TransformNode
 
     private _icon!: Ellipse
     private _label!: Rectangle
     private _detail!: Rectangle
     private _detailDot!: Ellipse
     private _statusRow!: TextBlock
-    /** Subclass-provided callback that refreshes the detail card's variable rows. */
+    /** Entity-provided callback that refreshes the detail card's variable rows. */
     private _syncBody: (color: string) => void = () => {}
 
-    private _expanded = false
     private _renderObserver: Observer<Scene> | null = null
 
     constructor(
-        node: TransformNode,
-        protected readonly gui: AdvancedDynamicTexture,
-        protected readonly scene: Scene,
+        private readonly entity: Entity,
+        private readonly gui: AdvancedDynamicTexture,
+        private readonly scene: Scene,
     ) {
-        this.node = node
+        this.node = entity.node
+        this._init()
     }
 
-    /*
-    Subclass surface
-    */
-
-    /** Text shown on the label pill and detail-card title. */
-    protected abstract get name(): string
-
-    /** When true the full label shows; when false it collapses to a status dot. */
-    protected abstract get active(): boolean
-
-    /** Current headline state driving the accent color and status line. */
-    protected abstract get status(): TagStatus
-
-    /** Namespaces control names so tags of different kinds never collide. */
-    protected abstract readonly idPrefix: string
-
-    /** Pixels the tag floats above the node's anchor point. */
-    protected abstract readonly linkOffsetY: number
-
-    /** Pick priority applied to the node's meshes (see {@link PICK_PRIORITY}). */
-    protected abstract readonly pickPriority: number
-
-    /**
-     * Append the target-specific rows to the detail card's `panel` (the shared
-     * title + status rows are already present). Return a callback that refreshes
-     * those rows; it is invoked every frame with the current accent color.
-     */
-    protected abstract buildDetailBody(panel: StackPanel): (color: string) => void
-
-    /**
-     * Wire up the controls and per-frame update. Subclasses MUST call this at the
-     * end of their constructor — not the base's, because it reads subclass state
-     * (name/status/…) that only exists once the subclass fields are assigned.
-     */
-    protected init() {
+    /** Wire up the controls and per-frame update. */
+    private _init() {
         this._icon = this._buildIcon()
         this._label = this._buildLabel()
         const detail = this._buildDetail()
@@ -144,11 +111,11 @@ export abstract class WorldTag {
     }
 
     /*
-    Detail-card helpers (for subclasses building their body)
+    Detail-card helpers (exposed to the entity via a TagBody)
     */
 
     /** A muted, left-aligned info row. */
-    protected detailRow(parent: StackPanel): TextBlock {
+    private detailRow(parent: StackPanel): TextBlock {
         const row = new TextBlock()
         row.color = TEXT_MUTED
         row.fontSize = 12
@@ -160,7 +127,7 @@ export abstract class WorldTag {
     }
 
     /** A red, wrapping row for error text (hidden by default). */
-    protected errorRow(parent: StackPanel): TextBlock {
+    private errorRow(parent: StackPanel): TextBlock {
         const row = new TextBlock()
         row.color = STATUS_COLOR.error
         row.fontSize = 12
@@ -178,7 +145,7 @@ export abstract class WorldTag {
     */
 
     private _buildIcon(): Ellipse {
-        const icon = new Ellipse(`${this.idPrefix}-${this.name}-tag-icon`)
+        const icon = new Ellipse(`${this.entity.idPrefix}-${this.entity.name}-tag-icon`)
         icon.width = "16px"
         icon.height = "16px"
         icon.thickness = 2
@@ -191,7 +158,7 @@ export abstract class WorldTag {
     }
 
     private _buildLabel(): Rectangle {
-        const root = new Rectangle(`${this.idPrefix}-${this.name}-tag-label`)
+        const root = new Rectangle(`${this.entity.idPrefix}-${this.entity.name}-tag-label`)
         root.adaptWidthToChildren = true
         root.cornerRadius = 13
         root.thickness = 2
@@ -201,7 +168,7 @@ export abstract class WorldTag {
         root.heightInPixels = 24
 
         const name = new TextBlock()
-        name.text = this.name
+        name.text = this.entity.name
         name.color = TEXT_PRIMARY
         name.fontSize = 13
         name.fontWeight = "600"
@@ -217,7 +184,7 @@ export abstract class WorldTag {
     }
 
     private _buildDetail(): { root: Rectangle; dot: Ellipse; statusRow: TextBlock } {
-        const root = new Rectangle(`${this.idPrefix}-${this.name}-tag-detail`)
+        const root = new Rectangle(`${this.entity.idPrefix}-${this.entity.name}-tag-detail`)
         root.width = "210px"
         root.adaptHeightToChildren = true
         root.cornerRadius = 12
@@ -250,16 +217,20 @@ export abstract class WorldTag {
         titleRow.addControl(dot)
 
         const title = new TextBlock()
-        title.text = this.name
+        title.text = this.entity.name
         title.color = TEXT_PRIMARY
         title.fontSize = 15
         title.fontWeight = "700"
         title.resizeToFit = true
         titleRow.addControl(title)
 
-        // Shared status line, then subclass-specific rows.
+        // Shared status line, then entity-specific rows.
         const statusRow = this.detailRow(panel)
-        this._syncBody = this.buildDetailBody(panel)
+        const body: TagBody = {
+            infoRow: () => this.detailRow(panel),
+            errorRow: () => this.errorRow(panel),
+        }
+        this._syncBody = this.entity.buildDetailBody(body)
 
         this._makeInteractive(root)
         this._attach(root)
@@ -277,7 +248,7 @@ export abstract class WorldTag {
     private _attach(control: Control) {
         this.gui.addControl(control)
         control.linkWithMesh(this.node)
-        control.linkOffsetYInPixels = this.linkOffsetY
+        control.linkOffsetYInPixels = this.entity.linkOffsetY
     }
 
     /** Fully faded-out controls still receive pointer events; ignore clicks on those. */
@@ -290,12 +261,19 @@ export abstract class WorldTag {
     }
 
     private _toggleExpanded() {
-        this._expanded = !this._expanded
+        const world = this.entity.floor.building.world
+        const expanded = world.focusedEntity === this.entity
+        if (expanded) {
+            world.focusedEntity = undefined
+        } else {
+            world.focusedEntity = this.entity
+            world.moveCameraToFocusedEntity()
+        }
     }
 
     /** Every mesh under the node toggles the detail card on click. */
     private _makeMeshInteractive() {
-        setPickPriority(this._meshes(), this.pickPriority)
+        setPickPriority(this._meshes(), this.entity.pickPriority)
         for (const mesh of this._meshes()) {
             mesh.isPickable = true
             mesh.actionManager ??= new ActionManager(this.scene)
@@ -329,20 +307,19 @@ export abstract class WorldTag {
 
         const dt = this.scene.getEngine().getDeltaTime() / 1000
 
+        const world = this.entity.floor.building.world
+        const expanded = world.focusedEntity === this.entity
+
         this._syncContent()
 
         // 2 = full label, 1 = icon only, 0 = hidden. A node on a hidden floor is
         // treated as fully out of view.
-        let lod = this.active ? 2 : 1
-        if (!this.node.isEnabled()) {
-            lod = 0
+        let lod = 0;
+        if (this.entity.active && this.node.isEnabled()) {
+            lod = this.entity.floor.building.focused ? 2 : 1
         }
 
-        if (lod === 0 && this._expanded) {
-            this._expanded = false
-        }
-
-        const showDetail = this._expanded && lod >= 1
+        const showDetail = expanded && lod >= 1
         const iconTarget = !showDetail && lod === 1 ? 1 : 0
         const labelTarget = !showDetail && lod === 2 ? 1 : 0
         const detailTarget = showDetail ? 1 : 0
@@ -367,12 +344,12 @@ export abstract class WorldTag {
         // half-heights so its bottom edge lines up with the label's bottom edge —
         // it then grows upward out of where the label sits.
         this._detail.linkOffsetYInPixels =
-            this.linkOffsetY + (this._label.heightInPixels - this._detail.heightInPixels) / 2
+            this.entity.linkOffsetY + (this._label.heightInPixels - this._detail.heightInPixels) / 2
     }
 
     /** Push live state into the controls (cheap; setters no-op on unchanged values). */
     private _syncContent() {
-        const status = this.status
+        const status = this.entity.status
         const color = STATUS_COLOR[status]
 
         this._icon.color = color

@@ -1,6 +1,8 @@
 import { useSelection } from "@/core/selection/use-selection";
 import { useWorld } from "@/hooks/use-world";
 import { LayerSlider } from "@workspace/ui/components/layer-slider";
+import { Toggle, } from "@workspace/ui/components/toggle";
+import { Grid2x2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 
@@ -10,7 +12,39 @@ const variants = {
     hiddenRight: { opacity: 0, x: 10 },
 }
 
-export function BuildingOverlay() {
+/*
+
+*/
+
+function EntityGroupsOverlay() {
+    const world = useWorld((s) => s.world)
+
+    const entityGroups = useSelection(store => store.entityGroups)
+
+    if (!world) {
+        return null
+    }
+
+    return world.entityGroups.map(x => (<Toggle
+        key={x.name}
+        variant="outline"
+        aria-label={`Toggle ${x.name}`}
+        pressed={entityGroups.has(x)}
+        onPressedChange={(p) => {
+            console.log(p)
+            x.active = p
+        }}
+    >
+        <Grid2x2 />
+        {x.name}
+    </Toggle>))
+}
+
+/*
+
+*/
+
+export function WorldOverlay() {
     const world = useWorld((s) => s.world)
     const building = useSelection(store => store.building)
     const [floor, setFloor] = useState(() => building?.activeFloor ?? 0)
@@ -49,7 +83,7 @@ export function BuildingOverlay() {
             <div className="flex flex-col justify-center items-center h-full p-8">
                 <div className="pointer-events-auto h-full max-h-80">
                     <AnimatePresence>
-                        {building && (
+                        {building && building.floors.length > 1 && (
                             <motion.div
                                 className="transform p-3 py-4 bg-primary/50 rounded-full h-full"
                                 variants={variants}
@@ -71,5 +105,11 @@ export function BuildingOverlay() {
                 </div>
             </div>
         </div>
+
+        {world && <div className="absolute bottom-0 left-1/2 transform -translate-x-1/2 p-4">
+            <div className="flex flex-row gap-4">
+                <EntityGroupsOverlay />
+            </div>
+        </div>}
     </>
 }
