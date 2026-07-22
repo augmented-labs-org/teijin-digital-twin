@@ -55,6 +55,10 @@ export class EntityTag {
     private _statusRow!: TextBlock
     /** Entity-provided callback that refreshes the detail card's variable rows. */
     private _syncBody: (color: string) => void = () => {}
+    /** Container the stat rows are reconciled into. */
+    private _statsPanel!: StackPanel
+    /** Live stat rows, reconciled against {@link Entity.stats} each frame. */
+    private _statRows: { row: Rectangle; icon: TextBlock; name: TextBlock; value: TextBlock }[] = []
 
     private _renderObserver: Observer<Scene> | null = null
 
@@ -122,6 +126,74 @@ export class EntityTag {
         row.resizeToFit = true
         parent.addControl(row)
         return row
+    }
+
+    /**
+     * Build one empty stat row and append it to {@link _statsPanel}. Its contents
+     * (icon/name/value text) are filled in by {@link _syncStats}.
+     */
+    private _buildStatRow(): { row: Rectangle; icon: TextBlock; name: TextBlock; value: TextBlock } {
+        const row = new Rectangle()
+        row.width = "182px"
+        row.height = "18px"
+        row.thickness = 0
+        row.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+
+        const icon = new TextBlock()
+        icon.color = TEXT_PRIMARY
+        icon.fontSize = 13
+        icon.resizeToFit = true
+        icon.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        icon.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        row.addControl(icon)
+
+        const name = new TextBlock()
+        name.color = TEXT_MUTED
+        name.fontSize = 12
+        name.resizeToFit = true
+        name.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        name.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        guiPadding(name, 0, 0, 0, 22)
+        row.addControl(name)
+
+        const value = new TextBlock()
+        value.color = TEXT_PRIMARY
+        value.fontSize = 12
+        value.fontWeight = "600"
+        value.width = "100%"
+        value.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT
+        value.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT
+        value.paddingRightInPixels = 5
+        row.addControl(value)
+
+        this._statsPanel.addControl(row)
+        return { row, icon, name, value }
+    }
+
+    /**
+     * Reconcile the stat rows against {@link Entity.stats}: grow or shrink the row
+     * pool to match, then refresh each row's icon/name/value. Cheap when nothing
+     * changed — text setters no-op on unchanged values.
+     */
+    private _syncStats() {
+        const stats = this.entity.stats
+
+        while (this._statRows.length > stats.length) {
+            this._statRows.pop()!.row.dispose()
+        }
+        while (this._statRows.length < stats.length) {
+            this._statRows.push(this._buildStatRow())
+        }
+
+        for (let i = 0; i < stats.length; i++) {
+            const stat = stats[i]!
+            const { icon, name, value } = this._statRows[i]!
+            icon.text = stat.icon
+            name.text = stat.name
+            value.text = `${stat.value}`
+        }
+
+        this._statsPanel.isVisible = stats.length > 0
     }
 
     /*
@@ -210,11 +282,23 @@ export class EntityTag {
 
         // Shared status line, then entity-specific rows.
         const statusRow = this.detailRow(panel)
+        guiPadding(statusRow, 0, 0, 4, 0)
+        
         const body: TagBody = {
             infoRow: () => this.detailRow(panel),
             errorRow: () => this.errorRow(panel),
         }
         this._syncBody = this.entity.buildDetailBody(body)
+
+        // Generic per-entity stats, reconciled against `entity.stats` each frame
+        // into this container (rows are created lazily by `_syncStats`).
+        const statsPanel = new StackPanel()
+        statsPanel.isVertical = true
+        statsPanel.width = "100%"
+        statsPanel.spacing = 5
+        statsPanel.isVisible = false
+        panel.addControl(statsPanel)
+        this._statsPanel = statsPanel
 
         this._makeInteractive(root)
         this._attach(root)
@@ -345,6 +429,7 @@ export class EntityTag {
         this._statusRow.color = color
 
         this._syncBody(color)
+        this._syncStats()
     }
 
     private _fade(control: Control, target: number, dt: number) {

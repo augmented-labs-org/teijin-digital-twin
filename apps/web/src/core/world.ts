@@ -159,6 +159,21 @@ export class World {
             const areaOffice3 = floor.addArea('Office 3', buildingModel.meshes.find(x => x.name === 'Area 14 - Office 3')!, Color3.Random());
             const areaOffice4 = floor.addArea('Office 4', buildingModel.meshes.find(x => x.name === 'Area 15 - Office 4')!, Color3.Random());
 
+            // Sample stats, shown in each area's detail card.
+            areaFactory.stats.push(
+                { name: "Temperature", value: "24°C", icon: "🌡️" },
+                { name: "Power", value: "12 kW", icon: "⚡" },
+                { name: "Output", value: "320/h", icon: "📦" },
+            )
+            areaWarehouse1.stats.push(
+                { name: "Capacity", value: "78%", icon: "📦" },
+                { name: "Humidity", value: "45%", icon: "💧" },
+            )
+            areaLab1.stats.push(
+                { name: "Temperature", value: "21°C", icon: "🌡️" },
+                { name: "Air Quality", value: "Good", icon: "🧪" },
+            )
+
             building.activeFloor = building.floors.length - 1
 
             this.buildings.push(building)

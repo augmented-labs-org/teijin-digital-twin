@@ -3,7 +3,6 @@ import type { Area } from "./area"
 import type { Building, Floor } from "./building"
 import { Entity, EntityStatus, TagBody } from "./entity"
 import { PICK_PRIORITY } from "./pick-priority"
-import { TagStatus } from "./tag"
 
 export interface EquipmentInit {
     name: string

@@ -108,23 +108,7 @@ export class Area extends Entity<AbstractMesh> {
     }
 
     buildDetailBody(body: TagBody): (color: string) => void {
-        const equipmentRow = body.infoRow()
-        const onlineRow = body.infoRow()
-        const errorRow = body.errorRow()
-
         return () => {
-            const equipments = this.equipments
-            const total = equipments.length
-            const online = equipments.filter(e => e.online).length
-            const errored = equipments.filter(e => e.errored).length
-
-            equipmentRow.text = `Equipment: ${total}`
-            onlineRow.text = `Online: ${online}/${total}`
-
-            errorRow.isVisible = errored > 0
-            if (errored > 0) {
-                errorRow.text = `${errored} in error`
-            }
         }
     }
 }

@@ -15,6 +15,20 @@ export type EntityStatus = {
 }
 
 /**
+ * A single named metric shown in an entity's detail card. The {@link icon} is a
+ * glyph (e.g. an emoji) rendered inline before the name; {@link value} is
+ * stringified live each frame, so mutating it updates the card.
+ */
+export type EntityStat = {
+    /** Short label shown next to the icon. */
+    name: string
+    /** Displayed value; read every frame, so it can change over time. */
+    value: string | number
+    /** Icon glyph drawn before the name (e.g. "🌡️"). */
+    icon: string
+}
+
+/**
  * The surface an {@link Entity} uses to build its detail-card rows, handed to
  * {@link Entity.buildDetailBody}. It hides the tag's control plumbing: entities
  * just ask for rows and fill them in.
@@ -50,6 +64,9 @@ export abstract class Entity<N extends TransformNode = TransformNode> {
 
     /** Extra visuals rendered while the entity is active. */
     readonly features: EntityFeature[] = []
+
+    /** Named metrics shown in the detail card, each with an icon glyph. */
+    readonly stats: EntityStat[] = []
 
     /** Namespaces tag control names so entities of different kinds never collide. */
     abstract readonly idPrefix: string
