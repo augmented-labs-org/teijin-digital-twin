@@ -5,6 +5,7 @@ import { Building } from "./building/building";
 import { Entity } from "./building/entity";
 import { installPriorityPicking } from "./building/pick-priority";
 import { MapCamera } from "./camera/map-camera";
+import { CorefluxTelemetry } from "./telemetry/coreflux";
 
 export class EntityGroup {
     readonly world: World
@@ -84,6 +85,9 @@ export class World {
     /** Every attached entity (areas + equipment); each owns its tag and features. */
     private readonly _entities: Entity[] = []
 
+    /** Live sensor feed from the Coreflux broker, wired to topic-bound stats. */
+    private readonly telemetry = new CorefluxTelemetry()
+
     /*
 
     */
@@ -159,19 +163,28 @@ export class World {
             const areaOffice3 = floor.addArea('Office 3', buildingModel.meshes.find(x => x.name === 'Area 14 - Office 3')!, Color3.Random());
             const areaOffice4 = floor.addArea('Office 4', buildingModel.meshes.find(x => x.name === 'Area 15 - Office 4')!, Color3.Random());
 
-            // Sample stats, shown in each area's detail card.
+            // Stats shown in each area's detail card, driven live from the Coreflux
+            // broker. `topic` matches what tools/factory.py publishes; `format` maps
+            // the raw sensor value to the displayed string.
+            const round = (v: unknown) => Math.round(Number(v))
+            const oneDp = (v: unknown) => Number(v).toFixed(1)
+            const airQuality = (v: unknown) => {
+                const pm25 = Number(v)
+                return pm25 < 12 ? "Good" : pm25 < 35 ? "Moderate" : "Poor"
+            }
+
             areaFactory.stats.push(
-                { name: "Temperature", value: "24°C", icon: "🌡️" },
-                { name: "Power", value: "12 kW", icon: "⚡" },
-                { name: "Output", value: "320/h", icon: "📦" },
+                { name: "Temperature", value: "24°C", icon: "🌡️", topic: "factory/floor-0/factory/temperature", format: v => `${round(v)}°C` },
+                { name: "Power", value: "12 kW", icon: "⚡", topic: "factory/floor-0/factory/power", format: v => `${oneDp(v)} kW` },
+                { name: "Output", value: "320/h", icon: "📦", topic: "factory/floor-0/factory/output", format: v => `${round(v)}/h` },
             )
             areaWarehouse1.stats.push(
-                { name: "Capacity", value: "78%", icon: "📦" },
-                { name: "Humidity", value: "45%", icon: "💧" },
+                { name: "Capacity", value: "78%", icon: "📦", topic: "factory/floor-0/warehouse-1/capacity", format: v => `${round(v)}%` },
+                { name: "Humidity", value: "45%", icon: "💧", topic: "factory/floor-0/warehouse-1/humidity", format: v => `${round(v)}%` },
             )
             areaLab1.stats.push(
-                { name: "Temperature", value: "21°C", icon: "🌡️" },
-                { name: "Air Quality", value: "Good", icon: "🧪" },
+                { name: "Temperature", value: "21°C", icon: "🌡️", topic: "factory/floor-0/lab-1/temperature", format: v => `${round(v)}°C` },
+                { name: "Air Quality", value: "Good", icon: "🧪", topic: "factory/floor-0/lab-1/air_quality_pm25", format: airQuality },
             )
 
             building.activeFloor = building.floors.length - 1
@@ -185,6 +198,11 @@ export class World {
                 entity.attach(this.gui, this.scene)
                 this._entities.push(entity)
             }
+
+            // Subscribe every topic-bound stat to the Coreflux broker and start
+            // streaming live sensor values into their detail cards.
+            this.telemetry.registerAll(this._entities.flatMap(e => e.stats))
+            this.telemetry.connect()
 
             this.entityGroups.push(new EntityGroup(this, 'Areas', [
                 areaEntrance,
@@ -261,6 +279,7 @@ export class World {
         this._onKeyboard = undefined
         this._cameraFocusObserver?.remove()
         this._cameraFocusObserver = null
+        this.telemetry.dispose()
         this._entities.forEach(entity => entity.dispose())
         this._entities.length = 0
         this.gui.dispose()

@@ -26,6 +26,14 @@ export type EntityStat = {
     value: string | number
     /** Icon glyph drawn before the name (e.g. "🌡️"). */
     icon: string
+    /**
+     * MQTT topic whose published value drives this stat live. When set, the
+     * telemetry service subscribes to it and writes each message into
+     * {@link value} (via {@link format}).
+     */
+    topic?: string
+    /** Maps a raw published value to the string/number shown in {@link value}. */
+    format?: (raw: unknown) => string | number
 }
 
 /**
