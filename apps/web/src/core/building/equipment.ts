@@ -1,7 +1,7 @@
 import { TransformNode } from "@babylonjs/core"
 import type { Area } from "./area"
 import type { Building, Floor } from "./building"
-import { Entity, TagBody } from "./entity"
+import { Entity, EntityStatus, TagBody } from "./entity"
 import { PICK_PRIORITY } from "./pick-priority"
 import { TagStatus } from "./tag"
 
@@ -43,11 +43,21 @@ export class Equipment extends Entity<TransformNode> {
         return this.area.building
     }
 
-    get status(): TagStatus {
+
+    get status(): EntityStatus {
         if (this.errored) {
-            return "error"
+            return {
+                status: "Error",
+                color: "#ef4444"
+            }
         }
-        return this.online ? "online" : "offline"
+
+        return this.online ? {
+            status: "Online",
+            color: "#22c55e"
+        } : {
+            status: "Offline"
+        }
     }
 
     buildDetailBody(body: TagBody): (color: string) => void {

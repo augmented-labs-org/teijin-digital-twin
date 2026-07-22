@@ -1,12 +1,17 @@
 import { Observer, Scene, TransformNode } from "@babylonjs/core";
 import { AdvancedDynamicTexture, TextBlock } from "@babylonjs/gui";
 import { Floor } from "./building";
-import { EntityTag, TagStatus } from "./tag";
+import { EntityTag } from "./tag";
 
 export interface EntityFeature {
     attach(scene: Scene): void
-    sync(entity: Entity, dt: number): void
+    sync(dt: number): void
     detach(): void
+}
+
+export type EntityStatus = {
+    status: string,
+    color?: string
 }
 
 /**
@@ -85,7 +90,7 @@ export abstract class Entity<N extends TransformNode = TransformNode> {
     */
 
     /** Current headline state driving the tag's accent color and status line. */
-    abstract get status(): TagStatus
+    abstract get status(): EntityStatus
 
     /**
      * Append the entity-specific rows to the detail card via `body`. Return a
@@ -102,7 +107,7 @@ export abstract class Entity<N extends TransformNode = TransformNode> {
         }
         this._observer = scene.onBeforeRenderObservable.add((scene) => {
             for (const feature of this.features) {
-                feature.sync(this, scene.deltaTime / 1000.0)
+                feature.sync(scene.deltaTime / 1000.0)
             }
         })
     }

@@ -1,12 +1,11 @@
 import { AbstractMesh, Color3, Scene } from "@babylonjs/core"
 import { AreaMaterial } from "../shaders/areaShader"
 import { getLocalBoundingBox } from "../utils/bounds"
+import { damp } from "../utils/tween"
 import type { Building, Floor } from "./building"
-import { Entity, EntityFeature, TagBody } from "./entity"
+import { Entity, EntityFeature, EntityStatus, TagBody } from "./entity"
 import { Equipment, EquipmentInit } from "./equipment"
 import { PICK_PRIORITY } from "./pick-priority"
-import { TagStatus } from "./tag"
-import { damp } from "../utils/tween"
 
 /**
  * Renders an area's zone as a vertical fade using {@link AreaMaterial}. The area
@@ -16,27 +15,27 @@ import { damp } from "../utils/tween"
 class AreaFadeFeature implements EntityFeature {
     private material?: AreaMaterial
 
-    constructor(private readonly node: AbstractMesh) {}
+    constructor(private readonly area: Area) {}
 
     attach(scene: Scene) {
         const material = new AreaMaterial("areaFade", scene)
-        const { min } = getLocalBoundingBox(this.node)
+        const { min } = getLocalBoundingBox(this.area.node)
 
         material.alpha = 0
-        material.setup(min.y, min.y + 0.5, new Color3(0, 1, 1))
+        material.setup(min.y, min.y + 0.5, this.area.color)
 
-        this.node.material = material
+        this.area.node.material = material
         this.material = material
     }
 
-    sync(entity: Entity, dt: number) {
+    sync(dt: number) {
         if (!this.material) {
             return
         }
 
-        const targetAlpha = entity.active ? 0.5 : 0
+        const targetAlpha = this.area.active ? 0.5 : 0
         this.material.alpha = damp(this.material.alpha, targetAlpha, 0.005, dt)
-        this.node.isVisible = this.material.alpha > 0.001
+        this.area.node.isVisible = this.material.alpha > 0.001
     }
 
     detach() {
@@ -53,6 +52,7 @@ class AreaFadeFeature implements EntityFeature {
  * rows and an error row, and it renders a zone fade while active.
  */
 export class Area extends Entity<AbstractMesh> {
+
     readonly idPrefix = "area"
     readonly linkOffsetY = -60
     readonly pickPriority = PICK_PRIORITY.ROOM
@@ -60,10 +60,15 @@ export class Area extends Entity<AbstractMesh> {
     readonly floor: Floor
     readonly equipments: Equipment[] = []
 
-    constructor(floor: Floor, name: string, node: AbstractMesh) {
+    readonly color: Color3
+
+    constructor(floor: Floor, name: string, node: AbstractMesh, color: Color3) {
         super(name, node, floor)
+
         this.floor = floor
-        this.features.push(new AreaFadeFeature(node))
+        this.color = color
+
+        this.features.push(new AreaFadeFeature(this))
     }
 
     override set focused(val: boolean) {
@@ -88,11 +93,18 @@ export class Area extends Entity<AbstractMesh> {
         return equipment
     }
 
-    get status(): TagStatus {
+    get status(): EntityStatus {
         if (this.equipments.some(e => e.errored)) {
-            return "error"
+            return {
+                status: "Error",
+                color: "#ef4444"
+            }
         }
-        return this.equipments.some(e => e.online) ? "online" : "offline"
+
+        return {
+            status: "Ok",
+            color: this.color.toHexString()
+        }
     }
 
     buildDetailBody(body: TagBody): (color: string) => void {

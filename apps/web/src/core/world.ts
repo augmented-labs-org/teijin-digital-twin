@@ -1,4 +1,4 @@
-import { ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, MeshBuilder, Observable, Observer, PointerEventTypes, SelectionOutlineLayer, ShadowGenerator, Vector3, type Scene } from "@babylonjs/core";
+import { ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, KeyboardEventTypes, MeshBuilder, Observable, Observer, PointerEventTypes, SelectionOutlineLayer, ShadowGenerator, Vector3, type KeyboardInfo, type Scene } from "@babylonjs/core";
 import { AdvancedDynamicTexture } from "@babylonjs/gui";
 import { GridMaterial } from "@babylonjs/materials";
 import { Building } from "./building/building";
@@ -65,6 +65,8 @@ export class World {
 
     private _onAfterCameraRender?: Observer<Camera>
 
+    private _onKeyboard?: Observer<KeyboardInfo>
+
     private _cameraFocusObserver: Observer<Scene> | null = null
     private _cameraFocusStartTarget: Vector3 | null = null
     private _cameraFocusStartRadius = 0
@@ -120,6 +122,7 @@ export class World {
         this.outlineLayer.occlusionStrength = 0;
 
         this._onAfterCameraRender = scene.onAfterRenderCameraObservable.add(this._afterCameraRender)
+        this._onKeyboard = scene.onKeyboardObservable.add(this._onKeyboardEvent)
         scene.onDisposeObservable.add(this._dispose)
     }
 
@@ -140,21 +143,21 @@ export class World {
 
             const floor = building.addFloor("Floor 0", buildingModel.meshes.find(x => x.name === 'Floor 0')!)
 
-            const areaEntrance = floor.addArea('Entrance', buildingModel.meshes.find(x => x.name === 'Area 1 - Entrance')!);
-            const areaWarehouse1 = floor.addArea('Warehouse 1', buildingModel.meshes.find(x => x.name === 'Area 2 - Warehouse 1')!);
-            const areaWarehouse2 = floor.addArea('Warehouse 2', buildingModel.meshes.find(x => x.name === 'Area 3 - Warehouse 2')!);
-            const areaFactory = floor.addArea('Factory', buildingModel.meshes.find(x => x.name === 'Area 4 - Factory')!);
-            const areaLab1 = floor.addArea('Lab 1', buildingModel.meshes.find(x => x.name === 'Area 5 - Lab 1')!);
-            const areaLab2 = floor.addArea('Lab 2', buildingModel.meshes.find(x => x.name === 'Area 6 - Lab 2')!);
-            const areaLab3 = floor.addArea('Lab 3', buildingModel.meshes.find(x => x.name === 'Area 7 - Lab 3')!);
-            const areaDressingRoom = floor.addArea('dressing room', buildingModel.meshes.find(x => x.name === 'Area 8 - dressing room')!);
-            const areaPantry = floor.addArea('Pantry', buildingModel.meshes.find(x => x.name === 'Area 9 - Pantry')!);
-            const areaWc1 = floor.addArea('WC 1', buildingModel.meshes.find(x => x.name === 'Area 10 - WC 1')!);
-            const areaWc2 = floor.addArea('WC 2', buildingModel.meshes.find(x => x.name === 'Area 11 - WC 2')!);
-            const areaOffice1 = floor.addArea('Office 1', buildingModel.meshes.find(x => x.name === 'Area 12 - Office 1')!);
-            const areaOffice2 = floor.addArea('Office 2', buildingModel.meshes.find(x => x.name === 'Area 13 - Office 2')!);
-            const areaOffice3 = floor.addArea('Office 3', buildingModel.meshes.find(x => x.name === 'Area 14 - Office 3')!);
-            const areaOffice4 = floor.addArea('Office 4', buildingModel.meshes.find(x => x.name === 'Area 15 - Office 4')!);
+            const areaEntrance = floor.addArea('Entrance', buildingModel.meshes.find(x => x.name === 'Area 1 - Entrance')!, Color3.Random());
+            const areaWarehouse1 = floor.addArea('Warehouse 1', buildingModel.meshes.find(x => x.name === 'Area 2 - Warehouse 1')!, Color3.Random());
+            const areaWarehouse2 = floor.addArea('Warehouse 2', buildingModel.meshes.find(x => x.name === 'Area 3 - Warehouse 2')!, Color3.Random());
+            const areaFactory = floor.addArea('Factory', buildingModel.meshes.find(x => x.name === 'Area 4 - Factory')!, Color3.Random());
+            const areaLab1 = floor.addArea('Lab 1', buildingModel.meshes.find(x => x.name === 'Area 5 - Lab 1')!, Color3.Random());
+            const areaLab2 = floor.addArea('Lab 2', buildingModel.meshes.find(x => x.name === 'Area 6 - Lab 2')!, Color3.Random());
+            const areaLab3 = floor.addArea('Lab 3', buildingModel.meshes.find(x => x.name === 'Area 7 - Lab 3')!, Color3.Random());
+            const areaDressingRoom = floor.addArea('dressing room', buildingModel.meshes.find(x => x.name === 'Area 8 - dressing room')!, Color3.Random());
+            const areaPantry = floor.addArea('Pantry', buildingModel.meshes.find(x => x.name === 'Area 9 - Pantry')!, Color3.Random());
+            const areaWc1 = floor.addArea('WC 1', buildingModel.meshes.find(x => x.name === 'Area 10 - WC 1')!, Color3.Random());
+            const areaWc2 = floor.addArea('WC 2', buildingModel.meshes.find(x => x.name === 'Area 11 - WC 2')!, Color3.Random());
+            const areaOffice1 = floor.addArea('Office 1', buildingModel.meshes.find(x => x.name === 'Area 12 - Office 1')!, Color3.Random());
+            const areaOffice2 = floor.addArea('Office 2', buildingModel.meshes.find(x => x.name === 'Area 13 - Office 2')!, Color3.Random());
+            const areaOffice3 = floor.addArea('Office 3', buildingModel.meshes.find(x => x.name === 'Area 14 - Office 3')!, Color3.Random());
+            const areaOffice4 = floor.addArea('Office 4', buildingModel.meshes.find(x => x.name === 'Area 15 - Office 4')!, Color3.Random());
 
             building.activeFloor = building.floors.length - 1
 
@@ -211,8 +214,16 @@ export class World {
             PointerEventTypes.POINTERDOWN,
             true,
         )
-        // A press landed on a control: drop the pending pointer-up mesh pick.
-        this.gui.onControlPickedObservable.add(() => {
+        
+        // A press landed on a real control: drop the pending pointer-up mesh pick.
+        // The fullscreen root container "contains" every point and is hit-test
+        // visible, so it reports itself as picked on every down — ignore it, or no
+        // click on a bare entity mesh would ever pick (skipPointerUpPicking would
+        // be stuck on).
+        this.gui.onControlPickedObservable.add((control) => {
+            if (control === this.gui.rootContainer) {
+                return
+            }
             this.scene.skipPointerUpPicking = true
         })
     }
@@ -221,9 +232,18 @@ export class World {
 
     */
 
+    /** ESC clears the focused entity. */
+    private _onKeyboardEvent = (info: KeyboardInfo) => {
+        if (info.type === KeyboardEventTypes.KEYDOWN && info.event.key === "Escape") {
+            this.focusedEntity = undefined
+        }
+    }
+
     private _dispose = () => {
         this._onAfterCameraRender?.remove()
         this._onAfterCameraRender = undefined
+        this._onKeyboard?.remove()
+        this._onKeyboard = undefined
         this._cameraFocusObserver?.remove()
         this._cameraFocusObserver = null
         this._entities.forEach(entity => entity.dispose())

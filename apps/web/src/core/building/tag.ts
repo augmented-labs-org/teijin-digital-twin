@@ -12,22 +12,6 @@ import { guiPadding } from "../utils/gui"
 import type { Entity, TagBody } from "./entity"
 import { setPickPriority } from "./pick-priority"
 
-/** A tag's headline state, shown as an accent color and a status line. */
-export type TagStatus = "online" | "offline" | "error"
-
-/** Border/accent color per status. Green online, dark gray offline, red error. */
-const STATUS_COLOR: Record<TagStatus, string> = {
-    online: "#22c55e",
-    offline: "#374151",
-    error: "#ef4444",
-}
-
-const STATUS_TEXT: Record<TagStatus, string> = {
-    online: "Online",
-    offline: "Offline",
-    error: "Error",
-}
-
 const CARD_BACKGROUND = "#ffffff"
 const TEXT_PRIMARY = "#111827"
 const TEXT_MUTED = "#6b7280"
@@ -129,7 +113,7 @@ export class EntityTag {
     /** A red, wrapping row for error text (hidden by default). */
     private errorRow(parent: StackPanel): TextBlock {
         const row = new TextBlock()
-        row.color = STATUS_COLOR.error
+        row.color = "#ef4444"
         row.fontSize = 12
         row.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
         row.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
@@ -350,14 +334,14 @@ export class EntityTag {
     /** Push live state into the controls (cheap; setters no-op on unchanged values). */
     private _syncContent() {
         const status = this.entity.status
-        const color = STATUS_COLOR[status]
+        const color = status.color ?? "#374151"
 
         this._icon.color = color
         this._label.color = color
         this._detail.color = color
         this._detailDot.background = color
 
-        this._statusRow.text = `Status: ${STATUS_TEXT[status]}`
+        this._statusRow.text = `Status: ${status.status}`
         this._statusRow.color = color
 
         this._syncBody(color)
