@@ -1,9 +1,10 @@
-import { ActionManager, BoundingSphere, Camera, Color3, Color4, DirectionalLight, Engine, ExecuteCodeAction, HemisphericLight, ImportMeshAsync, MeshBuilder, NodeMaterialDefines, Observable, Observer, ShadowGenerator, Vector3, type Scene } from "@babylonjs/core";
+import { ActionManager, BoundingSphere, Camera, Color3, Color4, DirectionalLight, Engine, ExecuteCodeAction, HemisphericLight, ImportMeshAsync, MeshBuilder, NodeMaterialDefines, Observable, Observer, SelectionOutlineLayer, ShadowGenerator, Vector3, type Scene } from "@babylonjs/core";
 import { installPriorityPicking, PICK_PRIORITY, setPickPriority } from "./building/pick-priority";
 import { AdvancedDynamicTexture } from "@babylonjs/gui";
 import { CustomMaterial, GridMaterial } from "@babylonjs/materials";
 import { Building, BuildingEquipment, BuildingFloor } from "./building/building";
 import { EquipmentTag } from "./building/equipment";
+import { RoomTag } from "./building/room";
 import { MapCamera } from "./camera/map-camera";
 import { RoomMaterial } from "./shaders/roomShader";
 import { getLocalBoundingBox } from "./utils/bounds";
@@ -28,8 +29,15 @@ export class World {
     /** The one shared fullscreen GUI layer. All label features attach controls here. */
     public readonly gui: AdvancedDynamicTexture
 
+    public readonly outlineLayer: SelectionOutlineLayer
+
+    //
+
     /** One screen-space tag per equipment, anchored to its mesh on the shared GUI layer. */
     private readonly _equipmentTags: EquipmentTag[] = []
+
+    /** One screen-space tag per room, anchored to its mesh on the shared GUI layer. */
+    private readonly _roomTags: RoomTag[] = []
 
     /*
 
@@ -61,6 +69,7 @@ export class World {
         shadowGenerator.setDarkness(0.35)
 
         this.gui = AdvancedDynamicTexture.CreateFullscreenUI("worldUI", true, scene, undefined, true)
+        this.outlineLayer = new SelectionOutlineLayer("worldSelectionOutline", this.scene)
 
         this._onAfterCameraRender = scene.onAfterRenderCameraObservable.add(this._afterCameraRender)
         scene.onDisposeObservable.add(this._dispose)
@@ -121,6 +130,10 @@ export class World {
 
             this.buildings.push(building)
 
+            for (const room of building.floors.flatMap(f => f.rooms)) {
+                this._roomTags.push(new RoomTag(room, this.gui, this.scene))
+            }
+
             for (const equipment of building.floors.flatMap(f => f.rooms).flatMap(r => r.equipments)) {
                 this._equipmentTags.push(new EquipmentTag(equipment, this.gui, this.scene))
             }
@@ -141,7 +154,10 @@ export class World {
         this._onAfterCameraRender = undefined
         this._equipmentTags.forEach(tag => tag.dispose())
         this._equipmentTags.length = 0
+        this._roomTags.forEach(tag => tag.dispose())
+        this._roomTags.length = 0
         this.gui.dispose()
+        this.outlineLayer.dispose()
         this.onFocusChanged.clear()
     }
 

@@ -1,8 +1,8 @@
-import { AbstractMesh, Node } from "@babylonjs/core"
+import { AbstractMesh, Node, TransformNode } from "@babylonjs/core"
 
 interface BuildingEquipmentInit {
     name: string
-    node: Node
+    node: TransformNode
     online?: boolean
     running?: boolean
     errored?: boolean
@@ -12,7 +12,7 @@ interface BuildingEquipmentInit {
 export class BuildingEquipment {
     readonly room: BuildingRoom
     name: string
-    node: Node
+    node: TransformNode
     online: boolean
     running: boolean
     errored: boolean
