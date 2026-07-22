@@ -1,4 +1,4 @@
-import { ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, MeshBuilder, Observable, Observer, SelectionOutlineLayer, ShadowGenerator, TimerState, Vector3, type Scene } from "@babylonjs/core";
+import { ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, MeshBuilder, Observable, Observer, PointerEventTypes, SelectionOutlineLayer, ShadowGenerator, Vector3, type Scene } from "@babylonjs/core";
 import { AdvancedDynamicTexture } from "@babylonjs/gui";
 import { GridMaterial } from "@babylonjs/materials";
 import { Building } from "./building/building";
@@ -112,6 +112,7 @@ export class World {
         shadowGenerator.setDarkness(0.35)
 
         this.gui = AdvancedDynamicTexture.CreateFullscreenUI("worldUI", true, scene, undefined, true)
+        this.initGui()
 
         this.outlineLayer = new SelectionOutlineLayer("worldSelectionOutline", this.scene)
         this.outlineLayer.outlineColor = new Color3(0.1, 0.1, 0.1);
@@ -190,6 +191,30 @@ export class World {
                 throw err
             }
         }
+    }
+
+    private initGui() {
+        this.gui.skipBlockEvents =
+            PointerEventTypes.POINTERDOWN |
+            PointerEventTypes.POINTERMOVE |
+            PointerEventTypes.POINTERUP |
+            PointerEventTypes.POINTERWHEEL
+
+        this.gui.usePointerTapForClickEvent = true
+
+        // Reset at the start of every press. insertFirst so this runs before the GUI's
+        // own pointer handler reports a picked control below, letting a control press win.
+        this.scene.onPrePointerObservable.add(
+            () => {
+                this.scene.skipPointerUpPicking = false
+            },
+            PointerEventTypes.POINTERDOWN,
+            true,
+        )
+        // A press landed on a control: drop the pending pointer-up mesh pick.
+        this.gui.onControlPickedObservable.add(() => {
+            this.scene.skipPointerUpPicking = true
+        })
     }
 
     /*
