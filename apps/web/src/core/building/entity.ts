@@ -5,7 +5,7 @@ import { EntityTag, TagStatus } from "./tag";
 
 export interface EntityFeature {
     attach(scene: Scene): void
-    sync(entity: Entity): void
+    sync(entity: Entity, dt: number): void
     detach(): void
 }
 
@@ -100,9 +100,9 @@ export abstract class Entity<N extends TransformNode = TransformNode> {
         for (const feature of this.features) {
             feature.attach(scene)
         }
-        this._observer = scene.onBeforeRenderObservable.add(() => {
+        this._observer = scene.onBeforeRenderObservable.add((scene) => {
             for (const feature of this.features) {
-                feature.sync(this)
+                feature.sync(this, scene.deltaTime / 1000.0)
             }
         })
     }

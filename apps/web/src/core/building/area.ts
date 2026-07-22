@@ -6,6 +6,7 @@ import { Entity, EntityFeature, TagBody } from "./entity"
 import { Equipment, EquipmentInit } from "./equipment"
 import { PICK_PRIORITY } from "./pick-priority"
 import { TagStatus } from "./tag"
+import { damp } from "../utils/tween"
 
 /**
  * Renders an area's zone as a vertical fade using {@link AreaMaterial}. The area
@@ -21,15 +22,21 @@ class AreaFadeFeature implements EntityFeature {
         const material = new AreaMaterial("areaFade", scene)
         const { min } = getLocalBoundingBox(this.node)
 
-        material.alpha = 0.5
+        material.alpha = 0
         material.setup(min.y, min.y + 0.5, new Color3(0, 1, 1))
 
         this.node.material = material
         this.material = material
     }
 
-    sync(entity: Entity) {
-        this.node.isVisible = entity.active
+    sync(entity: Entity, dt: number) {
+        if (!this.material) {
+            return
+        }
+
+        const targetAlpha = entity.active ? 0.5 : 0
+        this.material.alpha = damp(this.material.alpha, targetAlpha, 0.005, dt)
+        this.node.isVisible = this.material.alpha > 0.001
     }
 
     detach() {

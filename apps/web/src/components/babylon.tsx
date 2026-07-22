@@ -17,6 +17,15 @@ export function BabylonWorld({ onWorldLoad, ...props }: BabylonWorldProps) {
         }
 
         const engine = new Engine(canvas, true, {}, true)
+
+        // High-DPR phones otherwise render the 3D scene *and* re-rasterize the
+        // full-screen GUI layer (all the entity tags) at 2–3× native resolution,
+        // which dominates mobile frame time. Cap the effective device-pixel-ratio
+        // at 2. hardwareScalingLevel is 1/DPR, so flooring it at 0.5 caps DPR while
+        // leaving 1× and 2× displays (most desktops/laptops) untouched.
+        const MAX_DPR = 2
+        engine.setHardwareScalingLevel(Math.max(engine.getHardwareScalingLevel(), 1 / MAX_DPR))
+
         const scene = new Scene(engine)
 
         const onSceneReady = (scene: Scene) => {

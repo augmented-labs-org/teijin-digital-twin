@@ -5,7 +5,6 @@ import { Building } from "./building/building";
 import { Entity } from "./building/entity";
 import { installPriorityPicking } from "./building/pick-priority";
 import { MapCamera } from "./camera/map-camera";
-import { smoothDampFloat, smoothDampVector3 } from "./utils/smooth-damp";
 
 export class EntityGroup {
     readonly world: World
@@ -67,10 +66,11 @@ export class World {
     private _onAfterCameraRender?: Observer<Camera>
 
     private _cameraFocusObserver: Observer<Scene> | null = null
+    private _cameraFocusStartTarget: Vector3 | null = null
+    private _cameraFocusStartRadius = 0
     private _cameraFocusTargetGoal: Vector3 | null = null
     private _cameraFocusRadiusGoal: number | null = null
-    private _cameraTargetVelocity = Vector3.Zero()
-    private _cameraRadiusVelocity = 0
+    private _cameraFocusElapsed = 0
 
     /** The one shared fullscreen GUI layer. All label features attach controls here. */
     public readonly gui: AdvancedDynamicTexture
@@ -308,14 +308,17 @@ export class World {
     }
 
     /**
-     * Pursues `target`/`radius` with a critically-damped spring rather than a fixed keyframe
-     * animation. Re-targeting mid-flight (e.g. focusing a new entity before the previous focus
-     * finished) just updates the goal the spring chases next frame, so velocity stays continuous
-     * and the camera doesn't stutter/snap the way restarting a keyframe animation from rest would.
+     * Eases `target`/`radius` to their goals over a fixed duration with a cubic ease-in-out curve,
+     * so the camera accelerates out of rest and decelerates into the goal. Re-targeting mid-flight
+     * (e.g. focusing a new entity before the previous focus finished) restarts the ease from the
+     * camera's current position/radius, keeping motion continuous rather than snapping from rest.
      */
     private _animateCameraTo(camera: ArcRotateCamera, target: Vector3, radius: number) {
+        this._cameraFocusStartTarget = camera.target.clone()
+        this._cameraFocusStartRadius = camera.radius
         this._cameraFocusTargetGoal = target.clone()
         this._cameraFocusRadiusGoal = radius
+        this._cameraFocusElapsed = 0
 
         if (this._cameraFocusObserver) {
             return
@@ -323,12 +326,16 @@ export class World {
 
         camera.detachControl()
 
-        const smoothTime = 0.4
+        const duration = 0.6
+
+        // Cubic ease-in-out: slow near the endpoints, fast through the middle.
+        const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 
         this._cameraFocusObserver = this.scene.onBeforeRenderObservable.add(() => {
+            const startTarget = this._cameraFocusStartTarget
             const targetGoal = this._cameraFocusTargetGoal
             const radiusGoal = this._cameraFocusRadiusGoal
-            if (targetGoal === null || radiusGoal === null) {
+            if (startTarget === null || targetGoal === null || radiusGoal === null) {
                 return
             }
 
@@ -337,27 +344,23 @@ export class World {
                 return
             }
 
-            const [newTarget, newTargetVelocity] = smoothDampVector3(camera.target, targetGoal, this._cameraTargetVelocity, smoothTime, dt)
-            camera.target = newTarget
-            this._cameraTargetVelocity = newTargetVelocity
+            this._cameraFocusElapsed += dt
+            const t = Math.min(this._cameraFocusElapsed / duration, 1)
+            const k = easeInOut(t)
 
-            const [newRadius, newRadiusVelocity] = smoothDampFloat(camera.radius, radiusGoal, this._cameraRadiusVelocity, smoothTime, dt)
-            camera.radius = newRadius
-            this._cameraRadiusVelocity = newRadiusVelocity
+            camera.target = Vector3.Lerp(startTarget, targetGoal, k)
+            camera.radius = this._cameraFocusStartRadius + (radiusGoal - this._cameraFocusStartRadius) * k
 
-            const targetSettled = Vector3.DistanceSquared(camera.target, targetGoal) < 1e-3 && newTargetVelocity.lengthSquared() < 1e-3
-            const radiusSettled = Math.abs(camera.radius - radiusGoal) < 1e-2 && Math.abs(newRadiusVelocity) < 1e-2
-
-            if (targetSettled && radiusSettled) {
+            if (t >= 1) {
                 camera.target = targetGoal.clone()
                 camera.radius = radiusGoal
 
                 this._cameraFocusObserver?.remove()
                 this._cameraFocusObserver = null
+                this._cameraFocusStartTarget = null
                 this._cameraFocusTargetGoal = null
                 this._cameraFocusRadiusGoal = null
-                this._cameraTargetVelocity = Vector3.Zero()
-                this._cameraRadiusVelocity = 0
+                this._cameraFocusElapsed = 0
 
                 camera.attachControl()
             }
