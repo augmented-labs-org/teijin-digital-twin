@@ -1,11 +1,12 @@
-import { ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, KeyboardEventTypes, MeshBuilder, Observable, Observer, PointerEventTypes, SelectionOutlineLayer, ShadowGenerator, Vector3, type KeyboardInfo, type Scene } from "@babylonjs/core";
+import { ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, KeyboardEventTypes, Mesh, MeshBuilder, Observable, Observer, PointerEventTypes, SelectionOutlineLayer, ShadowGenerator, Vector3, type KeyboardInfo, type Scene } from "@babylonjs/core";
 import { AdvancedDynamicTexture } from "@babylonjs/gui";
 import { GridMaterial } from "@babylonjs/materials";
 import { Building } from "./building/building";
 import { Entity } from "./building/entity";
 import { installPriorityPicking } from "./building/pick-priority";
 import { MapCamera } from "./camera/map-camera";
-import { CorefluxTelemetry } from "./telemetry/coreflux";
+import { MqttTelemetry } from "./telemetry/mqtt";
+import { ImplBuilder } from "@/impl";
 
 export class EntityGroup {
     readonly world: World
@@ -86,7 +87,7 @@ export class World {
     private readonly _entities: Entity[] = []
 
     /** Live sensor feed from the Coreflux broker, wired to topic-bound stats. */
-    private readonly telemetry = new CorefluxTelemetry()
+    public readonly mqtt = new MqttTelemetry()
 
     /*
 
@@ -141,51 +142,9 @@ export class World {
 
         try {
             const buildingModel = await ImportMeshAsync("/models/factory.glb", this.scene)
-            const buildingRootNode = buildingModel.meshes[0]!
 
-            const building = new Building(this, 'Factory', buildingRootNode)
-
-            const floor = building.addFloor("Floor 0", buildingModel.meshes.find(x => x.name === 'Floor 0')!)
-
-            const areaEntrance = floor.addArea('Entrance', buildingModel.meshes.find(x => x.name === 'Area 1 - Entrance')!, Color3.Random());
-            const areaWarehouse1 = floor.addArea('Warehouse 1', buildingModel.meshes.find(x => x.name === 'Area 2 - Warehouse 1')!, Color3.Random());
-            const areaWarehouse2 = floor.addArea('Warehouse 2', buildingModel.meshes.find(x => x.name === 'Area 3 - Warehouse 2')!, Color3.Random());
-            const areaFactory = floor.addArea('Factory', buildingModel.meshes.find(x => x.name === 'Area 4 - Factory')!, Color3.Random());
-            const areaLab1 = floor.addArea('Lab 1', buildingModel.meshes.find(x => x.name === 'Area 5 - Lab 1')!, Color3.Random());
-            const areaLab2 = floor.addArea('Lab 2', buildingModel.meshes.find(x => x.name === 'Area 6 - Lab 2')!, Color3.Random());
-            const areaLab3 = floor.addArea('Lab 3', buildingModel.meshes.find(x => x.name === 'Area 7 - Lab 3')!, Color3.Random());
-            const areaDressingRoom = floor.addArea('dressing room', buildingModel.meshes.find(x => x.name === 'Area 8 - dressing room')!, Color3.Random());
-            const areaPantry = floor.addArea('Pantry', buildingModel.meshes.find(x => x.name === 'Area 9 - Pantry')!, Color3.Random());
-            const areaWc1 = floor.addArea('WC 1', buildingModel.meshes.find(x => x.name === 'Area 10 - WC 1')!, Color3.Random());
-            const areaWc2 = floor.addArea('WC 2', buildingModel.meshes.find(x => x.name === 'Area 11 - WC 2')!, Color3.Random());
-            const areaOffice1 = floor.addArea('Office 1', buildingModel.meshes.find(x => x.name === 'Area 12 - Office 1')!, Color3.Random());
-            const areaOffice2 = floor.addArea('Office 2', buildingModel.meshes.find(x => x.name === 'Area 13 - Office 2')!, Color3.Random());
-            const areaOffice3 = floor.addArea('Office 3', buildingModel.meshes.find(x => x.name === 'Area 14 - Office 3')!, Color3.Random());
-            const areaOffice4 = floor.addArea('Office 4', buildingModel.meshes.find(x => x.name === 'Area 15 - Office 4')!, Color3.Random());
-
-            // Stats shown in each area's detail card, driven live from the Coreflux
-            // broker. `topic` matches what tools/factory.py publishes; `format` maps
-            // the raw sensor value to the displayed string.
-            const round = (v: unknown) => Math.round(Number(v))
-            const oneDp = (v: unknown) => Number(v).toFixed(1)
-            const airQuality = (v: unknown) => {
-                const pm25 = Number(v)
-                return pm25 < 12 ? "Good" : pm25 < 35 ? "Moderate" : "Poor"
-            }
-
-            areaFactory.stats.push(
-                { name: "Temperature", value: "24°C", icon: "🌡️", topic: "factory/floor-0/factory/temperature", format: v => `${round(v)}°C` },
-                { name: "Power", value: "12 kW", icon: "⚡", topic: "factory/floor-0/factory/power", format: v => `${oneDp(v)} kW` },
-                { name: "Output", value: "320/h", icon: "📦", topic: "factory/floor-0/factory/output", format: v => `${round(v)}/h` },
-            )
-            areaWarehouse1.stats.push(
-                { name: "Capacity", value: "78%", icon: "📦", topic: "factory/floor-0/warehouse-1/capacity", format: v => `${round(v)}%` },
-                { name: "Humidity", value: "45%", icon: "💧", topic: "factory/floor-0/warehouse-1/humidity", format: v => `${round(v)}%` },
-            )
-            areaLab1.stats.push(
-                { name: "Temperature", value: "21°C", icon: "🌡️", topic: "factory/floor-0/lab-1/temperature", format: v => `${round(v)}°C` },
-                { name: "Air Quality", value: "Good", icon: "🧪", topic: "factory/floor-0/lab-1/air_quality_pm25", format: airQuality },
-            )
+            const impl = new ImplBuilder(buildingModel)
+            const building = impl.build(this)
 
             building.activeFloor = building.floors.length - 1
 
@@ -201,27 +160,18 @@ export class World {
 
             // Subscribe every topic-bound stat to the Coreflux broker and start
             // streaming live sensor values into their detail cards.
-            this.telemetry.registerAll(this._entities.flatMap(e => e.stats))
-            this.telemetry.connect()
+            this._entities.flatMap(e => e.stats).forEach(stat => {
+                if (!stat.topic) {
+                    return
+                }
 
-            this.entityGroups.push(new EntityGroup(this, 'Areas', [
-                areaEntrance,
-                areaWarehouse1,
-                areaWarehouse2,
-                areaFactory,
-                areaLab1,
-                areaLab2,
-                areaLab3,
-                areaDressingRoom,
-                areaPantry,
-                areaWc1,
-                areaWc2,
-                areaOffice1,
-                areaOffice2,
-                areaOffice3,
-                areaOffice4
-            ]))
+                this.mqtt.register(stat.topic, (data) => {
+                    const value = data && typeof data === "object" && "value" in data ? data.value : data
+                    stat.value = stat.format ? stat.format(value) : String(value)
+                })
+            })
 
+            this.mqtt.connect()
         } catch (err) {
             if (!this.scene.isDisposed) {
                 throw err
@@ -247,7 +197,7 @@ export class World {
             PointerEventTypes.POINTERDOWN,
             true,
         )
-        
+
         // A press landed on a real control: drop the pending pointer-up mesh pick.
         // The fullscreen root container "contains" every point and is hit-test
         // visible, so it reports itself as picked on every down — ignore it, or no
@@ -279,7 +229,7 @@ export class World {
         this._onKeyboard = undefined
         this._cameraFocusObserver?.remove()
         this._cameraFocusObserver = null
-        this.telemetry.dispose()
+        this.mqtt.dispose()
         this._entities.forEach(entity => entity.dispose())
         this._entities.length = 0
         this.gui.dispose()

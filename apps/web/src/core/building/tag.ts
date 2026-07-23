@@ -11,6 +11,7 @@ import {
 import { guiPadding } from "../utils/gui"
 import type { Entity, TagBody } from "./entity"
 import { setPickPriority } from "./pick-priority"
+import { getLocalBoundingBox } from "../utils/bounds"
 
 const CARD_BACKGROUND = "#ffffff"
 const TEXT_PRIMARY = "#111827"
@@ -47,6 +48,14 @@ const DETAIL_Z_BOOST = 1_000_000
  */
 export class EntityTag {
     private readonly node: TransformNode
+    /**
+     * Zero-offset child of {@link node} that every control links to. Babylon's
+     * GUI projects an {@link AbstractMesh} at its bounding-box center but a plain
+     * {@link TransformNode} at its origin; linking to this anchor — which has no
+     * bounding info and sits at the node's local origin — makes controls stick
+     * to the node position regardless of whether {@link node} is a mesh.
+     */
+    private _anchor!: TransformNode
 
     private _icon!: Ellipse
     private _label!: Rectangle
@@ -73,6 +82,14 @@ export class EntityTag {
 
     /** Wire up the controls and per-frame update. */
     private _init() {
+        this._anchor = new TransformNode(`${this.node.name}_tagAnchor`, this.scene)
+        this._anchor.parent = this.node
+
+        const bounds = getLocalBoundingBox(this.node, true)
+        this._anchor.position.x = (bounds.max.x + bounds.min.x) / 2
+        this._anchor.position.y = bounds.max.y
+        this._anchor.position.z = (bounds.max.z + bounds.min.z) / 2
+
         this._icon = this._buildIcon()
         this._label = this._buildLabel()
         const detail = this._buildDetail()
@@ -91,6 +108,7 @@ export class EntityTag {
         this._icon.dispose()
         this._label.dispose()
         this._detail.dispose()
+        this._anchor.dispose()
 
         for (const mesh of this._meshes()) {
             mesh.actionManager?.dispose()
@@ -315,7 +333,7 @@ export class EntityTag {
 
     private _attach(control: Control) {
         this.gui.addControl(control)
-        control.linkWithMesh(this.node)
+        control.linkWithMesh(this._anchor)
         control.linkOffsetYInPixels = this.entity.linkOffsetY
     }
 

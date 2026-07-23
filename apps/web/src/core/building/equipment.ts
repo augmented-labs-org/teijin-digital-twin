@@ -4,38 +4,25 @@ import type { Building, Floor } from "./building"
 import { Entity, EntityStatus, TagBody } from "./entity"
 import { PICK_PRIORITY } from "./pick-priority"
 
-export interface EquipmentInit {
-    name: string
-    node: TransformNode
-    online?: boolean
-    running?: boolean
-    errored?: boolean
-    errorReason?: string
-}
-
 /**
  * An {@link Entity} for a single piece of equipment. Its status comes straight
  * off its own state; the detail card adds a "Running" row and an error row.
  */
 export class Equipment extends Entity<TransformNode> {
     readonly idPrefix = "equipment"
-    readonly linkOffsetY = -22
+    readonly linkOffsetY = -30
     readonly pickPriority = PICK_PRIORITY.EQUIPMENT
 
     readonly area: Area
-    online: boolean
-    running: boolean
-    errored: boolean
+    online: boolean = false
+    running: boolean = false
+    errored: boolean = false
     errorReason?: string
 
-    constructor(area: Area, params: EquipmentInit) {
-        super(params.name, params.node, area.floor)
+    constructor(area: Area, name: string, node: TransformNode) {
+        super(name, node, area.floor)
 
         this.area = area
-        this.online = params.online ?? false
-        this.running = params.running ?? false
-        this.errored = params.errored ?? false
-        this.errorReason = params.errorReason
     }
 
     get building(): Building {

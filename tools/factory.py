@@ -2,22 +2,24 @@
 """
 Simulated factory -> Coreflux MQTT broker.
 
-Mirrors the world defined in apps/web/src/core/world.ts:
-    Building "Factory"
-      └─ Floor 0
-          ├─ 15 areas (Entrance, Warehouses, Factory, Labs, Offices, WCs, ...)
-          └─ equipment inside some of the areas
+Mirrors *exactly* the topic-bound stats wired up in apps/web/src/core/world.ts.
+world.ts is the source of truth: it subscribes to a fixed set of topics and this
+simulator publishes that set and nothing else. Every metric published here maps
+to a stat the web app actually renders.
 
-Every area exposes a set of sensors appropriate to what it is, and some areas
-contain equipment (machines) with their own telemetry. Each sensor/equipment
-metric is published to its own MQTT topic as a small JSON payload, so it maps
-cleanly onto Coreflux LOT models and any MQTT dashboard.
+What world.ts consumes:
+    Building "Factory" / Floor 0
+      ├─ Area "Factory"
+      │    ├─ temperature, power, output                     (area sensors)
+      │    ├─ equipment "painter": color, temperature0..2
+      │    └─ equipment "press0".."press4": actuation, force
+      ├─ Area "Warehouse 1": capacity, humidity
+      └─ Area "Lab 1": temperature, air_quality_pm25
 
-Topic layout:
+Topic layout (matches world.ts EntityStat.topic strings verbatim):
     factory/floor-0/<area-slug>/<metric>
-    factory/floor-0/<area-slug>/equipment/<equipment-slug>/<metric>
-    factory/floor-0/<area-slug>/equipment/<equipment-slug>/status   (retained)
-    factory/status                                                   (retained, LWT)
+    factory/floor-0/factory/equipments/<equipment-slug>/<metric>
+    factory/status                                          (retained, LWT)
 
 Payload (JSON):
     {"value": 23.7, "unit": "degC", "ts": "2026-07-22T15:04:05.123456+00:00"}
@@ -56,9 +58,12 @@ TOPIC_ROOT = "factory"
 PUBLISH_INTERVAL_S = 2.0        # seconds between full sensor sweeps
 QOS = 0
 
-# Probability, per equipment per sweep, of a fault appearing / clearing.
+# Probability, per press per sweep, of a fault appearing / clearing.
 FAULT_ONSET_P = 0.01
 FAULT_CLEAR_P = 0.25
+
+# Minimum time a press holds a running state before it may toggle again.
+PRESS_RUN_COOLDOWN_S = 5.0
 
 
 def slug(name: str) -> str:
@@ -100,7 +105,7 @@ class Sensor:
 
 @dataclass
 class IntSensor(Sensor):
-    """Integer-valued sensor (occupancy counts, output/h, ...)."""
+    """Integer-valued sensor (output/h, ...)."""
 
     def tick(self) -> float:
         super().tick()
@@ -110,17 +115,39 @@ class IntSensor(Sensor):
 
 @dataclass
 class BoolSensor:
-    """A door/switch style sensor that flips occasionally."""
+    """A switch/actuation style sensor that flips occasionally."""
 
     metric: str
     value: bool
-    flip_p: float = 0.15
+    flip_p: float = 0.2
     unit: str = "bool"
 
-    def payload(self) -> str:
+    def tick(self) -> bool:
         if random.random() < self.flip_p:
             self.value = not self.value
-        return json.dumps({"value": self.value, "unit": self.unit, "ts": now_iso()})
+        return self.value
+
+    def payload(self) -> str:
+        return json.dumps({"value": self.tick(), "unit": self.unit, "ts": now_iso()})
+
+
+@dataclass
+class ChoiceSensor:
+    """A categorical sensor that occasionally switches to a new choice (e.g. paint color)."""
+
+    metric: str
+    choices: list[str]
+    index: int = 0
+    change_p: float = 0.1
+    unit: str = ""
+
+    def tick(self) -> str:
+        if random.random() < self.change_p:
+            self.index = random.randrange(len(self.choices))
+        return self.choices[self.index]
+
+    def payload(self) -> str:
+        return json.dumps({"value": self.tick(), "unit": self.unit, "ts": now_iso()})
 
 
 # --------------------------------------------------------------------------- #
@@ -131,34 +158,78 @@ class BoolSensor:
 @dataclass
 class Equipment:
     """
-    A machine with online/running/error state plus running telemetry.
-    Matches the Equipment model in apps/web/src/core/building/equipment.ts.
+    A machine hanging off the Factory area. Publishes only the metrics world.ts
+    reads for it — no online/running/error status topic, because world.ts does
+    not subscribe to one. Its telemetry lives under
+    factory/floor-0/factory/equipments/<slug>/<metric>.
     """
 
-    name: str
-    online: bool = True
-    running: bool = True
-    errored: bool = False
-    error_reason: Optional[str] = None
-    faults: list[str] = field(default_factory=list)
-    sensors: list[Sensor] = field(default_factory=list)
+    slug: str
+    sensors: list = field(default_factory=list)
+
+
+class Press(Equipment):
+    """
+    A hydraulic press. Publishes, under factory/floor-0/factory/equipments/<slug>:
+      - actuation (bool)  : ON while the ram is stroking
+      - force (N)         : high while actuating, decaying toward zero when idle
+      - status (object)   : {status, online, running, errored, errorReason} —
+                            consumed by impl.ts to drive the press-down/up
+                            animations and the equipment status label.
+
+    `running` and `actuation` move together (the press actuates while it runs),
+    and `force` follows that state, so all three topics tell one story. A press
+    occasionally faults, which drops it out of the running/actuating cycle and
+    surfaces an `errorReason` until it recovers.
+    """
+
+    FAULTS = ["Seal leak", "Over-pressure", "Ram jam", "Hydraulic pressure low"]
+
+    def __init__(self, slug: str) -> None:
+        super().__init__(slug=slug, sensors=[])
+        self.online = True
+        self.running = True
+        self.errored = False
+        self.error_reason: Optional[str] = None
+        self._force = 0.0
+        self._last_run_change = time.monotonic()
+
+    @property
+    def actuating(self) -> bool:
+        return self.online and self.running and not self.errored
+
+    def _set_running(self, value: bool) -> None:
+        if value != self.running:
+            self.running = value
+            self._last_run_change = time.monotonic()
 
     def step_state(self) -> None:
-        # Occasionally toggle running when healthy.
-        if not self.errored and random.random() < 0.05:
-            self.running = not self.running
-
-        # Fault onset / recovery.
+        # Fault onset while healthy / recovery while faulted.
         if not self.errored and random.random() < FAULT_ONSET_P:
             self.errored = True
-            self.running = False
-            self.error_reason = random.choice(
-                self.faults or ["Unexpected fault"]
-            )
+            self._set_running(False)
+            self.error_reason = random.choice(self.FAULTS)
         elif self.errored and random.random() < FAULT_CLEAR_P:
             self.errored = False
             self.error_reason = None
-            self.running = True
+            self._set_running(True)
+
+        # While healthy, cycle the ram stroke on/off — but only once the press
+        # has held its current running state for at least PRESS_RUN_COOLDOWN_S.
+        cooled_down = time.monotonic() - self._last_run_change >= PRESS_RUN_COOLDOWN_S
+        if not self.errored and cooled_down and random.random() < 0.2:
+            self._set_running(not self.running)
+
+        # Force tracks whether the ram is currently actuating.
+        target = random.uniform(3000, 8000) if self.actuating else 0.0
+        self._force += (target - self._force) * 0.4 + random.uniform(-50, 50)
+        self._force = max(0.0, self._force)
+
+    def actuation_payload(self) -> str:
+        return json.dumps({"value": self.actuating, "unit": "bool", "ts": now_iso()})
+
+    def force_payload(self) -> str:
+        return json.dumps({"value": round(self._force), "unit": "N", "ts": now_iso()})
 
     def status_payload(self) -> str:
         if self.errored:
@@ -180,20 +251,16 @@ class Equipment:
 
 
 # --------------------------------------------------------------------------- #
-# Sensor / equipment factories (realistic per-area kit)
+# Sensor factories
 # --------------------------------------------------------------------------- #
 
 
-def temperature(base=22.0) -> Sensor:
-    return Sensor("temperature", "degC", base, base - 6, base + 6, 0.3)
+def temperature(base=22.0, metric="temperature") -> Sensor:
+    return Sensor(metric, "degC", base, base - 6, base + 6, 0.3)
 
 
 def humidity(base=45.0) -> Sensor:
     return Sensor("humidity", "%", base, 20, 80, 1.0)
-
-
-def co2(base=600.0) -> Sensor:
-    return Sensor("co2", "ppm", base, 400, 1500, 25, precision=0)
 
 
 def pm25(base=8.0) -> Sensor:
@@ -204,24 +271,8 @@ def capacity(base=70.0) -> Sensor:
     return Sensor("capacity", "%", base, 30, 100, 1.5)
 
 
-def occupancy(base=1) -> IntSensor:
-    return IntSensor("occupancy", "count", base, 0, 12, 2, precision=0)
-
-
-def machine(name: str, faults: list[str]) -> Equipment:
-    return Equipment(
-        name=name,
-        faults=faults,
-        sensors=[
-            Sensor("motor_current", "A", 12.0, 0, 40, 2.0),
-            Sensor("vibration", "mm/s", 1.5, 0, 12, 0.4, precision=2),
-            temperature(38.0),
-        ],
-    )
-
-
 # --------------------------------------------------------------------------- #
-# Area definitions — one entry per area in world.ts
+# Area definitions — only the areas world.ts binds telemetry to
 # --------------------------------------------------------------------------- #
 
 
@@ -234,36 +285,33 @@ class AreaSim:
 
 def build_areas() -> list[AreaSim]:
     return [
-        AreaSim("Entrance", [temperature(23), occupancy(2),
-                             BoolSensor("door_open", False)]),
-        AreaSim("Warehouse 1", [temperature(19), humidity(50), capacity(78)],
-                [machine("Forklift-01", ["Battery fault", "Hydraulic pressure low"])]),
-        AreaSim("Warehouse 2", [temperature(19), humidity(48), capacity(64)],
-                [machine("Forklift-02", ["Battery fault", "Motor overheat"])]),
-        AreaSim("Factory",
-                [temperature(24),
-                 Sensor("power", "kW", 12, 4, 30, 1.2),
-                 IntSensor("output", "units/h", 320, 180, 420, 15, precision=0),
-                 Sensor("noise", "dB", 78, 60, 95, 2.0)],
-                [machine("CNC-Mill-01", ["Spindle overload", "Coolant low", "Tool wear limit"]),
-                 machine("Conveyor-01", ["Belt jam", "Drive motor fault"]),
-                 machine("Robot-Arm-01", ["Servo fault", "Position error", "E-stop triggered"]),
-                 machine("Hydraulic-Press-01", ["Seal leak", "Over-pressure"])]),
-        AreaSim("Lab 1", [temperature(21), humidity(40), pm25(6), co2(550)],
-                [machine("Fume-Hood-01", ["Airflow below threshold"])]),
-        AreaSim("Lab 2", [temperature(21), humidity(42), pm25(7)],
-                [machine("Centrifuge-01", ["Imbalance detected", "Lid interlock"])]),
-        AreaSim("Lab 3", [temperature(21), humidity(41), pm25(7)]),
-        AreaSim("dressing room", [temperature(23), occupancy(1)]),
-        AreaSim("Pantry", [temperature(22), humidity(46),
-                           Sensor("fridge_temp", "degC", 4, 1, 8, 0.3)],
-                [machine("Refrigerator-01", ["Compressor fault", "Door left open"])]),
-        AreaSim("WC 1", [humidity(55), occupancy(0)]),
-        AreaSim("WC 2", [humidity(55), occupancy(0)]),
-        AreaSim("Office 1", [temperature(23), humidity(44), co2(650), occupancy(3)]),
-        AreaSim("Office 2", [temperature(23), humidity(44), co2(620), occupancy(2)]),
-        AreaSim("Office 3", [temperature(23), humidity(43), co2(700), occupancy(4)]),
-        AreaSim("Office 4", [temperature(23), humidity(45), co2(580), occupancy(1)]),
+        AreaSim(
+            "Factory",
+            sensors=[
+                temperature(24),
+                Sensor("power", "kW", 12, 4, 30, 1.2),
+                IntSensor("output", "units/h", 320, 180, 420, 15, precision=0),
+            ],
+            equipment=[
+                # Painting machine: one paint color + three bath temperatures.
+                Equipment(
+                    "painter",
+                    sensors=[
+                        ChoiceSensor(
+                            "color",
+                            ["Red", "Blue", "Green", "Yellow", "White", "Black"],
+                        ),
+                        temperature(24, "temperature0"),
+                        temperature(25, "temperature1"),
+                        temperature(23, "temperature2"),
+                    ],
+                ),
+                # Five presses (press0..press4) matching world.ts's index-based topics.
+                *[Press(f"press{i}") for i in range(5)],
+            ],
+        ),
+        AreaSim("Warehouse 1", sensors=[capacity(78), humidity(50)]),
+        AreaSim("Lab 1", sensors=[temperature(21), pm25(6)]),
     ]
 
 
@@ -321,12 +369,16 @@ def publish_sweep(client: mqtt.Client, areas: list[AreaSim]) -> int:
             count += 1
 
         for eq in area.equipment:
-            eq.step_state()
-            eq_base = f"{base}/equipment/{slug(eq.name)}"
-            client.publish(f"{eq_base}/status", eq.status_payload(), qos=QOS, retain=True)
-            count += 1
-            # Telemetry only flows while the machine is actually running.
-            if eq.running and not eq.errored:
+            eq_base = f"{base}/equipments/{eq.slug}"
+
+            if isinstance(eq, Press):
+                eq.step_state()
+                # status is retained so a late-joining client sees current state.
+                client.publish(f"{eq_base}/status", eq.status_payload(), qos=QOS, retain=True)
+                client.publish(f"{eq_base}/actuation", eq.actuation_payload(), qos=QOS)
+                client.publish(f"{eq_base}/force", eq.force_payload(), qos=QOS)
+                count += 3
+            else:
                 for sensor in eq.sensors:
                     client.publish(f"{eq_base}/{sensor.metric}", sensor.payload(), qos=QOS)
                     count += 1

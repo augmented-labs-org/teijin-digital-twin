@@ -1,0 +1,228 @@
+import { Area } from "@/core/building/area";
+import { AbstractMesh, AnimationGroup, Color3, ISceneLoaderAsyncResult, TransformNode } from "@babylonjs/core";
+import { Building } from "./core/building/building";
+import { EntityGroup, World } from "./core/world";
+
+export class ImplBuilder {
+
+    private result: ISceneLoaderAsyncResult
+
+    private nodesByName: Map<string, TransformNode>
+
+    private animationsByName: Map<string, AnimationGroup>
+
+    constructor(result: ISceneLoaderAsyncResult) {
+        this.result = result
+
+        this.nodesByName = new Map()
+
+        for (const node of result.transformNodes) {
+            this.nodesByName.set(node.name, node)
+        }
+
+        for (const node of result.meshes) {
+            this.nodesByName.set(node.name, node)
+        }
+
+        this.animationsByName = new Map()
+        for (const group of result.animationGroups) {
+            this.animationsByName.set(group.name, group)
+        }
+    }
+
+    /*
+
+    */
+
+    findNode(name: string) {
+        const transformNode = this.nodesByName.get(name)
+        if (!transformNode) {
+            throw new Error(`Could not find node of name '${name}'`)
+        }
+
+        return transformNode
+    }
+
+    findMesh(name: string) {
+        const node = this.findNode(name)
+
+        if (node instanceof AbstractMesh) {
+            return node
+        }
+
+        throw new Error(`Expected mesh of name '${name}' but found TransformNode`)
+    }
+
+    findAnimation(name: string) {
+        const group = this.animationsByName.get(name)
+        if (!group) {
+            throw new Error(`Could not find animation of name '${name}'`)
+        }
+
+        return group
+    }
+
+    /*
+
+    */
+
+
+    buildPress(area: Area, name: string, nodeName: string, animationPressUpName: string, animationPressDownName: string, topicPrefix: string) {
+        const world = area.world
+
+        const node = this.findNode(nodeName)
+
+        const animationPressDown = this.findAnimation(animationPressDownName)
+        animationPressDown.speedRatio = 10.0
+        const animationPressUp = this.findAnimation(animationPressUpName)
+        animationPressDown.speedRatio = 8.0
+
+        const press = area.addEquipment(name, node);
+
+        press.stats.push(
+            { name: 'Actuation', value: "OFF", icon: "⚙️", topic: `${topicPrefix}/actuation`, format: v => v === true ? 'ON' : 'OFF' },
+            { name: 'Force', value: "0 N", icon: "💪", topic: `${topicPrefix}/force`, format: v => `${Math.round(Number(v))} N` }
+        )
+
+        let firstStatus = true
+        world.mqtt.register(`${topicPrefix}/status`, (data) => {
+            if (typeof data !== 'object' || !data) {
+                return
+            }
+
+            if ('online' in data && typeof data.online === 'boolean' && data.online) {
+                press.online = true
+            } else {
+                press.online = false
+            }
+
+            if ('running' in data && typeof data.running === 'boolean' && data.running) {
+                if (!press.running || firstStatus) {
+                    animationPressUp.stop()
+                    animationPressDown.play()
+                }
+
+                press.running = true
+            } else {
+                if (press.running || firstStatus) {
+                    animationPressDown.stop()
+                    animationPressUp.play()
+                }
+
+                press.running = false
+            }
+
+            if ('errored' in data && typeof data.errored === 'boolean' && data.errored) {
+                press.errored = true
+                press.errorReason = 'errorReason' in data ? data['errorReason'] as string : undefined
+            } else {
+                press.errored = false
+                press.errorReason = undefined
+            }
+
+            firstStatus = false
+        })
+
+        return press
+    }
+
+    /*
+    
+    */
+
+    build(world: World): Building {
+        const buildingRootNode = this.result.meshes[0]!
+
+        //
+
+        const building = new Building(world, 'Factory', buildingRootNode)
+
+        const floor = building.addFloor("Floor 0", this.findNode('Floor 0'))
+
+        const areaEntrance = floor.addArea('Entrance', this.findMesh('Area 1 - Entrance'), Color3.Random());
+        const areaWarehouse1 = floor.addArea('Warehouse 1', this.findMesh('Area 2 - Warehouse 1'), Color3.Random());
+        const areaWarehouse2 = floor.addArea('Warehouse 2', this.findMesh('Area 3 - Warehouse 2'), Color3.Random());
+        const areaFactory = floor.addArea('Factory', this.findMesh('Area 4 - Factory'), Color3.Random());
+        const areaLab1 = floor.addArea('Lab 1', this.findMesh('Area 5 - Lab 1'), Color3.Random());
+        const areaLab2 = floor.addArea('Lab 2', this.findMesh('Area 6 - Lab 2'), Color3.Random());
+        const areaLab3 = floor.addArea('Lab 3', this.findMesh('Area 7 - Lab 3'), Color3.Random());
+        const areaDressingRoom = floor.addArea('dressing room', this.findMesh('Area 8 - dressing room'), Color3.Random());
+        const areaPantry = floor.addArea('Pantry', this.findMesh('Area 9 - Pantry'), Color3.Random());
+        const areaWc1 = floor.addArea('WC 1', this.findMesh('Area 10 - WC 1'), Color3.Random());
+        const areaWc2 = floor.addArea('WC 2', this.findMesh('Area 11 - WC 2'), Color3.Random());
+        const areaOffice1 = floor.addArea('Office 1', this.findMesh('Area 12 - Office 1'), Color3.Random());
+        const areaOffice2 = floor.addArea('Office 2', this.findMesh('Area 13 - Office 2'), Color3.Random());
+        const areaOffice3 = floor.addArea('Office 3', this.findMesh('Area 14 - Office 3'), Color3.Random());
+        const areaOffice4 = floor.addArea('Office 4', this.findMesh('Area 15 - Office 4'), Color3.Random());
+
+        const equipmentPaintingMachine = areaFactory.addEquipment('Paining Machine', this.findNode('Painting machine'))
+        equipmentPaintingMachine.stats.push(
+            { name: 'Color', value: "Red", icon: "🖌️", topic: `factory/floor-0/factory/equipments/painter/color` },
+            { name: "Temperature (Bath 1)", value: "24°C", icon: "🌡️", topic: "factory/floor-0/factory/equipments/painter/temperature0", format: v => `${round(v)}°C` },
+            { name: "Temperature (Bath 2)", value: "24°C", icon: "🌡️", topic: "factory/floor-0/factory/equipments/painter/temperature1", format: v => `${round(v)}°C` },
+            { name: "Temperature (Bath 3)", value: "24°C", icon: "🌡️", topic: "factory/floor-0/factory/equipments/painter/temperature2", format: v => `${round(v)}°C` },
+        )
+
+        const equipmentPresses = [
+            this.buildPress(areaFactory, 'Press 01', 'Press', 'Press up', 'Press Down', 'factory/floor-0/factory/equipments/press0'),
+            this.buildPress(areaFactory, 'Press 02', 'Press.001', 'Press up.001', 'Press Down.001', 'factory/floor-0/factory/equipments/press1'),
+            this.buildPress(areaFactory, 'Press 03', 'Press.002', 'Press up.002', 'Press Down.002', 'factory/floor-0/factory/equipments/press2'),
+            this.buildPress(areaFactory, 'Press 04', 'Press.003', 'Press up.003', 'Press Down.003', 'factory/floor-0/factory/equipments/press3'),
+            this.buildPress(areaFactory, 'Press 05', 'Press.004', 'Press up.004', 'Press Down.004', 'factory/floor-0/factory/equipments/press4'),
+        ]
+
+        // Stats shown in each area's detail card, driven live from the Coreflux
+        // broker. `topic` matches what tools/factory.py publishes; `format` maps
+        // the raw sensor value to the displayed string.
+        const round = (v: unknown) => Math.round(Number(v))
+        const oneDp = (v: unknown) => Number(v).toFixed(1)
+        const airQuality = (v: unknown) => {
+            const pm25 = Number(v)
+            return pm25 < 12 ? "Good" : pm25 < 35 ? "Moderate" : "Poor"
+        }
+
+        areaFactory.stats.push(
+            { name: "Temperature", value: "24°C", icon: "🌡️", topic: "factory/floor-0/factory/temperature", format: v => `${round(v)}°C` },
+            { name: "Power", value: "12 kW", icon: "⚡", topic: "factory/floor-0/factory/power", format: v => `${oneDp(v)} kW` },
+            { name: "Output", value: "320/h", icon: "📦", topic: "factory/floor-0/factory/output", format: v => `${round(v)}/h` },
+        )
+        areaWarehouse1.stats.push(
+            { name: "Capacity", value: "78%", icon: "📦", topic: "factory/floor-0/warehouse-1/capacity", format: v => `${round(v)}%` },
+            { name: "Humidity", value: "45%", icon: "💧", topic: "factory/floor-0/warehouse-1/humidity", format: v => `${round(v)}%` },
+        )
+        areaLab1.stats.push(
+            { name: "Temperature", value: "21°C", icon: "🌡️", topic: "factory/floor-0/lab-1/temperature", format: v => `${round(v)}°C` },
+            { name: "Air Quality", value: "Good", icon: "🧪", topic: "factory/floor-0/lab-1/air_quality_pm25", format: airQuality },
+        )
+
+        /*
+     
+        */
+
+        world.entityGroups.push(new EntityGroup(world, 'Areas', [
+            areaEntrance,
+            areaWarehouse1,
+            areaWarehouse2,
+            areaFactory,
+            areaLab1,
+            areaLab2,
+            areaLab3,
+            areaDressingRoom,
+            areaPantry,
+            areaWc1,
+            areaWc2,
+            areaOffice1,
+            areaOffice2,
+            areaOffice3,
+            areaOffice4
+        ]))
+
+        world.entityGroups.push(new EntityGroup(world, 'Factory', [
+            ...equipmentPresses,
+            equipmentPaintingMachine
+        ]))
+
+        return building
+    }
+
+}

@@ -1,4 +1,4 @@
-import { AbstractMesh, Color3, Scene } from "@babylonjs/core"
+import { AbstractMesh, Color3, Scene, TransformNode } from "@babylonjs/core"
 import { AreaMaterial } from "../shaders/areaShader"
 import { getLocalBoundingBox } from "../utils/bounds"
 import { damp } from "../utils/tween"
@@ -54,7 +54,7 @@ class AreaFadeFeature implements EntityFeature {
 export class Area extends Entity<AbstractMesh> {
 
     readonly idPrefix = "area"
-    readonly linkOffsetY = -60
+    readonly linkOffsetY = -30
     readonly pickPriority = PICK_PRIORITY.ROOM
 
     readonly floor: Floor
@@ -87,8 +87,8 @@ export class Area extends Entity<AbstractMesh> {
         return this.floor.building
     }
 
-    addEquipment(params: EquipmentInit): Equipment {
-        const equipment = new Equipment(this, params)
+    addEquipment(name: string, node: TransformNode): Equipment {
+        const equipment = new Equipment(this, name, node)
         this.equipments.push(equipment)
         return equipment
     }

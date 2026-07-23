@@ -1,4 +1,4 @@
-import { AbstractMesh, Matrix, Vector3 } from "@babylonjs/core"
+import { AbstractMesh, Matrix, TransformNode, Vector3 } from "@babylonjs/core"
 
 export interface LocalBounds {
     min: Vector3
@@ -10,8 +10,17 @@ export interface LocalBounds {
  * local space. Unlike transforming the corners of a world-space AABB, this handles rotated hierarchies
  * correctly by re-deriving the box from each mesh's own local geometry.
  */
-export function getLocalBoundingBox(root: AbstractMesh, includeDescendants = true): LocalBounds {
-    const meshes = includeDescendants ? [root, ...root.getChildMeshes(false)] : [root]
+export function getLocalBoundingBox(root: TransformNode, includeDescendants = true): LocalBounds {
+    const meshes: AbstractMesh[] = []
+    
+    if (root instanceof AbstractMesh) {
+        meshes.push(root)
+    }
+
+    if (includeDescendants) {
+        meshes.push(...root.getChildMeshes(false))
+    }
+
     const rootWorldInv = Matrix.Invert(root.getWorldMatrix())
 
     const min = new Vector3(Infinity, Infinity, Infinity)
