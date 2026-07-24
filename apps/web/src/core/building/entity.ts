@@ -2,6 +2,7 @@ import { Observer, Scene, TransformNode } from "@babylonjs/core";
 import { AdvancedDynamicTexture, TextBlock } from "@babylonjs/gui";
 import { Floor } from "./building";
 import { EntityTag } from "./tag";
+import type { EntityStateSnapshot } from "../telemetry/timeline";
 
 export interface EntityFeature {
     attach(scene: Scene): void
@@ -100,6 +101,34 @@ export abstract class Entity<N extends TransformNode = TransformNode> {
 
     get world() {
         return this.floor.building.world
+    }
+
+    /**
+     * Stable identity used to key this entity's structured state in the timeline.
+     * Unique across the current model (area/equipment names don't collide within
+     * a building) and stable across sessions, so it maps cleanly onto a future
+     * database row.
+     */
+    get key(): string {
+        return `${this.idPrefix}:${this.floor.building.name}:${this.name}`
+    }
+
+    /**
+     * Project a structured state snapshot onto this entity. Entities are pure
+     * projections of timeline state — this is the single write path, used for both
+     * live data and scrubbed history. The base handles the generic {@link stats};
+     * subclasses override to apply their own fields (calling `super.applyState`).
+     */
+    applyState(state: EntityStateSnapshot) {
+        if (!state.stats) {
+            return
+        }
+        for (const stat of this.stats) {
+            const value = state.stats[stat.name]
+            if (value !== undefined) {
+                stat.value = value
+            }
+        }
     }
 
     set focused(val: boolean) {

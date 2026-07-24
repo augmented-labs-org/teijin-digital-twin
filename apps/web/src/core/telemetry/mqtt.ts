@@ -58,9 +58,22 @@ export class MqttTelemetry {
                 return
             }
 
-            const parsed = JSON.parse(payload.toString())
+            let parsed: unknown
+            try {
+                parsed = JSON.parse(payload.toString())
+            } catch (err) {
+                console.error("[mqtt] failed to parse payload", topic, err)
+                return
+            }
+
+            // Isolate listeners so one throwing handler can't abort the rest (and,
+            // via a shared Observable, silently break the whole telemetry chain).
             for (const listener of listeners) {
-                listener(parsed)
+                try {
+                    listener(parsed)
+                } catch (err) {
+                    console.error("[mqtt] listener threw", topic, err)
+                }
             }
         })
 

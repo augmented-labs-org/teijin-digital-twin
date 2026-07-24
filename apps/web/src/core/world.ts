@@ -6,6 +6,7 @@ import { Entity } from "./building/entity";
 import { installPriorityPicking } from "./building/pick-priority";
 import { MapCamera } from "./camera/map-camera";
 import { MqttTelemetry } from "./telemetry/mqtt";
+import { InMemoryTimelineSource, Timeline, type EntityStateSnapshot, type SceneSnapshot, type TimelineChange } from "./telemetry/timeline";
 import { ImplBuilder } from "@/impl";
 
 export class EntityGroup {
@@ -88,6 +89,21 @@ export class World {
 
     /** Live sensor feed from the Coreflux broker, wired to topic-bound stats. */
     public readonly mqtt = new MqttTelemetry()
+
+    /** In-memory history of structured entity state; swappable for a DB source later. */
+    private readonly _timelineSource = new InMemoryTimelineSource()
+
+    /**
+     * Drives which moment the scene displays. The scene is a pure projection of
+     * {@link Timeline.currentState} — live data and scrubbed history both flow
+     * through the same {@link applySnapshot} path.
+     */
+    public readonly timeline = new Timeline(this._timelineSource)
+
+    private _timelineObserver?: Observer<TimelineChange>
+
+    /** Whether the in-progress projection should play transition animations or snap. */
+    private _projectionAnimates = true
 
     /*
 
@@ -174,17 +190,30 @@ export class World {
                 this._entities.push(entity)
             }
 
-            // Subscribe every topic-bound stat to the Coreflux broker and start
-            // streaming live sensor values into their detail cards.
-            this._entities.flatMap(e => e.stats).forEach(stat => {
-                if (!stat.topic) {
-                    return
-                }
+            // Subscribe every topic-bound stat to the Coreflux broker. Messages are
+            // recorded as structured state on the timeline (keyed by the owning
+            // entity), never written to the entity directly — the projection below
+            // is the single write path into the scene.
+            for (const entity of this._entities) {
+                for (const stat of entity.stats) {
+                    if (!stat.topic) {
+                        continue
+                    }
 
-                this.mqtt.register(stat.topic, (data) => {
-                    const value = data && typeof data === "object" && "value" in data ? data.value : data
-                    stat.value = stat.format ? stat.format(value) : String(value)
-                })
+                    this.mqtt.register(stat.topic, (data) => {
+                        const raw = data && typeof data === "object" && "value" in data ? data.value : data
+                        const value = stat.format ? stat.format(raw) : String(raw)
+                        this.recordState(entity.key, { stats: { [stat.name]: value } })
+                    })
+                }
+            }
+
+            // Project the timeline's current state onto the entities whenever it
+            // changes (new live data, a seek, or going live). Idempotent: entity
+            // setters no-op on unchanged values, so re-projecting the same sought
+            // snapshot as live data keeps streaming in the background is cheap.
+            this._timelineObserver = this.timeline.onChanged.add((change) => {
+                this.applySnapshot(this.timeline.currentState(), change.animate)
             })
 
             this.mqtt.connect()
@@ -245,12 +274,51 @@ export class World {
         this._onKeyboard = undefined
         this._cameraFocusObserver?.remove()
         this._cameraFocusObserver = null
+        this._timelineObserver?.remove()
+        this._timelineObserver = undefined
+        this.timeline.dispose()
         this.mqtt.dispose()
         this._entities.forEach(entity => entity.dispose())
         this._entities.length = 0
         this.gui.dispose()
         this.outlineLayer.dispose()
         this.onFocusBuildingChanged.clear()
+    }
+
+    /**
+     * Record a structured, interpreted state update for an entity onto the
+     * timeline. This is the only place live broker data enters the history; a
+     * future database-backed source would populate history elsewhere and this
+     * would go away.
+     */
+    recordState(key: string, partial: EntityStateSnapshot) {
+        this._timelineSource.record(key, partial, Date.now())
+    }
+
+    /**
+     * Whether the state change currently being projected should play transition
+     * animations (real-time live update) or snap to the final pose (a seek or
+     * go-live jump). Read by entities' view side-effects during {@link applyState}.
+     */
+    get projectionAnimates() {
+        return this._projectionAnimates
+    }
+
+    /**
+     * Project a structured scene snapshot onto the entities that appear in it.
+     * `animate` is threaded to entity view side-effects (e.g. press animations)
+     * via {@link projectionAnimates} for the duration of the synchronous apply.
+     */
+    applySnapshot(snapshot: SceneSnapshot, animate = true) {
+        this._projectionAnimates = animate
+        for (const entity of this._entities) {
+            const state = snapshot[entity.key]
+            if (state) {
+                entity.applyState(state)
+            }
+        }
+        // Default back to animating for any state change outside a projection.
+        this._projectionAnimates = true
     }
 
     /** Show every floor up to and including `floor`; hide the ones above it. */

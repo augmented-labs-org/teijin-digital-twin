@@ -1,5 +1,6 @@
 import { useSelection } from "@/core/selection/use-selection";
 import { useWorld } from "@/hooks/use-world";
+import { TimelineOverlay } from "@/components/world/timeline-overlay";
 import { LayerSlider } from "@workspace/ui/components/layer-slider";
 import { Toggle, } from "@workspace/ui/components/toggle";
 import { Grid2x2 } from "lucide-react";
@@ -106,10 +107,12 @@ export function WorldOverlay() {
             </div>
         </div>
 
-        {world && <div className="absolute bottom-0 left-1/2 transform -translate-x-1/2 p-4">
+        {world && <div className="absolute bottom-20 left-1/2 transform -translate-x-1/2 p-4">
             <div className="flex flex-row gap-4">
                 <EntityGroupsOverlay />
             </div>
         </div>}
+
+        {world && <TimelineOverlay />}
     </>
 }

@@ -136,47 +136,60 @@ export class ImplBuilder {
             { name: 'Force', value: "0 N", icon: "💪", topic: `${topicPrefix}/force`, format: v => `${Math.round(Number(v))} N` }
         )
 
-        let firstStatus = true
+        // Play an animation from the start, or snap straight to its final pose.
+        // Snapping is used when scrubbing/seeking so the press jumps to the sought
+        // state instantly instead of animating through the transition.
+        const playOrSnap = (group: AnimationGroup, snap: boolean) => {
+            group.play(false)
+            if (snap) {
+                group.goToFrame(group.to)
+                group.pause()
+            }
+        }
+
+        // View side-effects (lights + press animation) react to the equipment's
+        // `running` state rather than to raw messages, so they are reproduced
+        // identically whether the state changed from live data or from scrubbing
+        // history back onto the press. The animation only plays on an actual
+        // running transition; other state changes (online/errored) don't retrigger it.
+        const setRunningView = (running: boolean, snap: boolean) => {
+            if (running) {
+                animationPressUp.stop()
+                playOrSnap(animationPressDown, snap)
+                lightRed.on = false
+                lightGreen.on = true
+            } else {
+                animationPressDown.stop()
+                playOrSnap(animationPressUp, snap)
+                lightRed.on = true
+                lightGreen.on = false
+            }
+        }
+
+        let lastRunning = press.running
+        setRunningView(lastRunning, true)
+        press.onStateChanged.add(() => {
+            if (press.running === lastRunning) {
+                return
+            }
+            lastRunning = press.running
+            setRunningView(press.running, !world.projectionAnimates)
+        })
+
+        // Raw broker messages are interpreted into structured state and recorded
+        // on the timeline; the world projects the recorded state back onto the
+        // press (setting the fields above) for both live and scrubbed views.
         world.mqtt.register(`${topicPrefix}/status`, (data) => {
             if (typeof data !== 'object' || !data) {
                 return
             }
 
-            if ('online' in data && typeof data.online === 'boolean' && data.online) {
-                press.online = true
-            } else {
-                press.online = false
-            }
+            const online = 'online' in data && typeof data.online === 'boolean' && data.online
+            const running = 'running' in data && typeof data.running === 'boolean' && data.running
+            const errored = 'errored' in data && typeof data.errored === 'boolean' && data.errored
+            const errorReason = errored && 'errorReason' in data ? (data['errorReason'] as string) : undefined
 
-            if ('running' in data && typeof data.running === 'boolean' && data.running) {
-                if (!press.running || firstStatus) {
-                    animationPressUp.stop()
-                    animationPressDown.play()
-                }
-
-                press.running = true
-                lightRed.on = false
-                lightGreen.on = true
-            } else {
-                if (press.running || firstStatus) {
-                    animationPressDown.stop()
-                    animationPressUp.play()
-                }
-
-                press.running = false
-                lightRed.on = true
-                lightGreen.on = false
-            }
-
-            if ('errored' in data && typeof data.errored === 'boolean' && data.errored) {
-                press.errored = true
-                press.errorReason = 'errorReason' in data ? data['errorReason'] as string : undefined
-            } else {
-                press.errored = false
-                press.errorReason = undefined
-            }
-
-            firstStatus = false
+            world.recordState(press.key, { online, running, errored, errorReason })
         })
 
         return press
