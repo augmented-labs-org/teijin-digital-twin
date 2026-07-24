@@ -1,4 +1,4 @@
-import { ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImportMeshAsync, KeyboardEventTypes, Mesh, MeshBuilder, Observable, Observer, PointerEventTypes, SelectionOutlineLayer, ShadowGenerator, Vector3, type KeyboardInfo, type Scene } from "@babylonjs/core";
+import { ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DirectionalLight, GlowLayer, HemisphericLight, ImportMeshAsync, KeyboardEventTypes, Mesh, MeshBuilder, Observable, Observer, PBRMaterial, PointerEventTypes, SelectionOutlineLayer, ShadowGenerator, Vector3, type KeyboardInfo, type Scene } from "@babylonjs/core";
 import { AdvancedDynamicTexture } from "@babylonjs/gui";
 import { GridMaterial } from "@babylonjs/materials";
 import { Building } from "./building/building";
@@ -118,6 +118,12 @@ export class World {
         shadowGenerator.blurKernel = 32
         shadowGenerator.setDarkness(0.35)
 
+        const gl = new GlowLayer("glow", scene, { 
+            blurKernelSize: 64,
+        });
+
+        gl.intensity = 1.2;
+
         this.gui = AdvancedDynamicTexture.CreateFullscreenUI("worldUI", true, scene, undefined, true)
         this.initGui()
 
@@ -142,6 +148,16 @@ export class World {
 
         try {
             const buildingModel = await ImportMeshAsync("/models/factory.glb", this.scene)
+
+            const materialSet = new Set(buildingModel.meshes.flatMap(m => m.material).filter(m => !!m))
+            for (const material of materialSet) {
+                if (!(material instanceof PBRMaterial)) {
+                    continue
+                }
+
+                material.emissiveIntensity = Math.min(1, (material.emissiveIntensity - 1) / 10)
+                console.log(material.name, material.emissiveIntensity)
+            }
 
             const impl = new ImplBuilder(buildingModel)
             const building = impl.build(this)

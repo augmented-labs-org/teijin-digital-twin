@@ -4,7 +4,7 @@ import { getLocalBoundingBox } from "../utils/bounds"
 import { damp } from "../utils/tween"
 import type { Building, Floor } from "./building"
 import { Entity, EntityFeature, EntityStatus, TagBody } from "./entity"
-import { Equipment, EquipmentInit } from "./equipment"
+import { Equipment } from "./equipment"
 import { PICK_PRIORITY } from "./pick-priority"
 
 /**

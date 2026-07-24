@@ -16,7 +16,7 @@ export class MapCamera extends ArcRotateCamera {
         super(name, DEFAULT_ALPHA, DEFAULT_BETA, DEFAULT_RADIUS, Vector3.Zero(), scene)
 
         // Limits
-        this.lowerRadiusLimit = 10
+        this.lowerRadiusLimit = 1
         this.upperRadiusLimit = 2000
         this.upperBetaLimit = Math.PI / 2.5
         this.minZ = 1

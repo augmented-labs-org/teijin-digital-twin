@@ -1,7 +1,43 @@
 import { Area } from "@/core/building/area";
-import { AbstractMesh, AnimationGroup, Color3, ISceneLoaderAsyncResult, TransformNode } from "@babylonjs/core";
+import { AbstractMesh, AnimationGroup, Color3, ISceneLoaderAsyncResult, Node, TransformNode } from "@babylonjs/core";
 import { Building } from "./core/building/building";
 import { EntityGroup, World } from "./core/world";
+
+class SemaphoreLight {
+
+    private nodeOff: Node
+
+    private nodeOn: Node
+
+    private _on = false
+
+    constructor(nodeOff: Node, nodeOn: Node) {
+        this.nodeOff = nodeOff
+        this.nodeOn = nodeOn
+
+        this.nodeOff.setEnabled(true)
+        this.nodeOn.setEnabled(false)
+    }
+
+    get on() {
+        return this._on
+    }
+
+    set on(val: boolean) {
+        if (this._on === val) {
+            return
+        }
+
+        this._on = val
+
+        this.nodeOff.setEnabled(!val)
+        this.nodeOn.setEnabled(val)
+    }
+}
+
+/*
+
+*/
 
 export class ImplBuilder {
 
@@ -67,7 +103,20 @@ export class ImplBuilder {
     */
 
 
-    buildPress(area: Area, name: string, nodeName: string, animationPressUpName: string, animationPressDownName: string, topicPrefix: string) {
+    buildPress({
+        area, name, nodeName, greenLightOffNodeName, greenLightOnNodeName, redLightOffNodeName, redLightOnNodeName, animationPressDownName, animationPressUpName, topicPrefix
+    }: {
+        area: Area,
+        name: string,
+        nodeName: string,
+        greenLightOffNodeName: string,
+        greenLightOnNodeName: string,
+        redLightOffNodeName: string,
+        redLightOnNodeName: string,
+        animationPressUpName: string,
+        animationPressDownName: string,
+        topicPrefix: string
+    }) {
         const world = area.world
 
         const node = this.findNode(nodeName)
@@ -78,6 +127,9 @@ export class ImplBuilder {
         animationPressDown.speedRatio = 8.0
 
         const press = area.addEquipment(name, node);
+
+        const lightGreen = new SemaphoreLight(this.findNode(greenLightOffNodeName), this.findNode(greenLightOnNodeName))
+        const lightRed = new SemaphoreLight(this.findNode(redLightOffNodeName), this.findNode(redLightOnNodeName))
 
         press.stats.push(
             { name: 'Actuation', value: "OFF", icon: "⚙️", topic: `${topicPrefix}/actuation`, format: v => v === true ? 'ON' : 'OFF' },
@@ -103,6 +155,8 @@ export class ImplBuilder {
                 }
 
                 press.running = true
+                lightRed.on = false
+                lightGreen.on = true
             } else {
                 if (press.running || firstStatus) {
                     animationPressDown.stop()
@@ -110,6 +164,8 @@ export class ImplBuilder {
                 }
 
                 press.running = false
+                lightRed.on = true
+                lightGreen.on = false
             }
 
             if ('errored' in data && typeof data.errored === 'boolean' && data.errored) {
@@ -163,13 +219,22 @@ export class ImplBuilder {
             { name: "Temperature (Bath 3)", value: "24°C", icon: "🌡️", topic: "factory/floor-0/factory/equipments/painter/temperature2", format: v => `${round(v)}°C` },
         )
 
-        const equipmentPresses = [
-            this.buildPress(areaFactory, 'Press 01', 'Press', 'Press up', 'Press Down', 'factory/floor-0/factory/equipments/press0'),
-            this.buildPress(areaFactory, 'Press 02', 'Press.001', 'Press up.001', 'Press Down.001', 'factory/floor-0/factory/equipments/press1'),
-            this.buildPress(areaFactory, 'Press 03', 'Press.002', 'Press up.002', 'Press Down.002', 'factory/floor-0/factory/equipments/press2'),
-            this.buildPress(areaFactory, 'Press 04', 'Press.003', 'Press up.003', 'Press Down.003', 'factory/floor-0/factory/equipments/press3'),
-            this.buildPress(areaFactory, 'Press 05', 'Press.004', 'Press up.004', 'Press Down.004', 'factory/floor-0/factory/equipments/press4'),
-        ]
+        const equipmentPresses = [0, 1, 2, 3, 4].map(i => {
+            const suffix = i === 0 ? '' : `.00${i}`
+            
+            return this.buildPress({
+                area: areaFactory,
+                name: `Press 0${i + 1}`,
+                nodeName: `Press${suffix}`,
+                greenLightOffNodeName: `Green light Off${suffix}`,
+                greenLightOnNodeName: `Green light On${suffix}`,
+                redLightOffNodeName: `Red light Off${suffix}`,
+                redLightOnNodeName: `Red light On${suffix}`,
+                animationPressUpName: `Press up${suffix}`,
+                animationPressDownName: `Press Down${suffix}`,
+                topicPrefix: `factory/floor-0/factory/equipments/press${i}`,
+            })
+        })
 
         // Stats shown in each area's detail card, driven live from the Coreflux
         // broker. `topic` matches what tools/factory.py publishes; `format` maps

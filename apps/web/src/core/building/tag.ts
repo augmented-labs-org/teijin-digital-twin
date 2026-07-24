@@ -361,7 +361,6 @@ export class EntityTag {
     private _makeMeshInteractive() {
         setPickPriority(this._meshes(), this.entity.pickPriority)
         for (const mesh of this._meshes()) {
-            mesh.isPickable = true
             mesh.actionManager ??= new ActionManager(this.scene)
             mesh.actionManager.registerAction(
                 new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {
@@ -403,6 +402,10 @@ export class EntityTag {
         let lod = 0;
         if (this.entity.active && this.node.isEnabled()) {
             lod = this.entity.floor.building.focused ? 2 : 1
+        }
+
+        for (const mesh of this._meshes()) {
+            mesh.isPickable = lod !== 0
         }
 
         const showDetail = expanded && lod >= 1
