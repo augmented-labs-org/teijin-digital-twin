@@ -1,6 +1,8 @@
 import { Area } from "@/core/building/area";
-import { AbstractMesh, AnimationGroup, Color3, ISceneLoaderAsyncResult, Node, TransformNode } from "@babylonjs/core";
+import { AbstractMesh, AnimationGroup, Color3, ISceneLoaderAsyncResult, MeshBuilder, Node, StandardMaterial, TransformNode, Vector3 } from "@babylonjs/core";
 import { Building } from "./core/building/building";
+import { Part } from "./core/building/part";
+import { Waypoint } from "./core/building/waypoint";
 import { EntityGroup, World } from "./core/world";
 
 class SemaphoreLight {
@@ -102,10 +104,60 @@ export class ImplBuilder {
 
     */
 
+    /**
+     * Author a waypoint in `area`, anchored to a fresh node placed at the floor
+     * level of the area's center. Movables snap onto this node when placed here.
+     */
+    addWaypointAtCenter(area: Area, id: string, name: string): Waypoint {
+        const scene = area.node.getScene()
+        const { min, max } = area.node.getHierarchyBoundingVectors(true)
+
+        const node = new TransformNode(`waypoint:${id}`, scene)
+        node.position = new Vector3((min.x + max.x) / 2, min.y, (min.z + max.z) / 2)
+
+        return area.addWaypoint(id, name, node)
+    }
+
+    /**
+     * Spawn a part as a small box mesh and register it as a movable with the world.
+     * It has no position of its own — it is placed onto `initialWaypoint`, which
+     * the world seeds once state projection starts.
+     */
+    spawnPart(world: World, id: string, name: string, initialWaypoint: Waypoint): Part {
+        const scene = initialWaypoint.node.getScene()
+
+        const box = MeshBuilder.CreateBox(`part:${id}`, { size: 0.6 }, scene)
+        const material = new StandardMaterial(`part:${id}:mat`, scene)
+        material.diffuseColor = new Color3(0.23, 0.51, 0.96)
+        box.material = material
+
+        const part = new Part(id, world, name, box)
+        part.initialWaypoint = initialWaypoint
+        world.registerMovable(part)
+
+        // Live movement: a published waypoint id relocates the part through the
+        // same recorded-state path everything else uses.
+        world.mqtt.register(`factory/parts/${id}/location`, (data) => {
+            const waypoint = data && typeof data === "object" && "waypoint" in data
+                ? String((data as { waypoint: unknown }).waypoint)
+                : typeof data === "string" ? data : undefined
+            if (waypoint) {
+                world.recordState(part.id, { location: { waypoint } })
+            }
+        })
+
+        return part
+    }
+
+    /*
+
+    */
+
 
     buildPress({
-        area, name, nodeName, greenLightOffNodeName, greenLightOnNodeName, redLightOffNodeName, redLightOnNodeName, animationPressDownName, animationPressUpName, topicPrefix
+        id, area, name, nodeName, greenLightOffNodeName, greenLightOnNodeName, redLightOffNodeName, redLightOnNodeName, animationPressDownName, animationPressUpName, topicPrefix
     }: {
+        id: string,
         area: Area,
         name: string,
         nodeName: string,
@@ -126,7 +178,7 @@ export class ImplBuilder {
         const animationPressUp = this.findAnimation(animationPressUpName)
         animationPressDown.speedRatio = 8.0
 
-        const press = area.addEquipment(name, node);
+        const press = area.addEquipment(id, name, node);
 
         const lightGreen = new SemaphoreLight(this.findNode(greenLightOffNodeName), this.findNode(greenLightOnNodeName))
         const lightRed = new SemaphoreLight(this.findNode(redLightOffNodeName), this.findNode(redLightOnNodeName))
@@ -189,7 +241,7 @@ export class ImplBuilder {
             const errored = 'errored' in data && typeof data.errored === 'boolean' && data.errored
             const errorReason = errored && 'errorReason' in data ? (data['errorReason'] as string) : undefined
 
-            world.recordState(press.key, { online, running, errored, errorReason })
+            world.recordState(press.id, { online, running, errored, errorReason })
         })
 
         return press
@@ -208,23 +260,23 @@ export class ImplBuilder {
 
         const floor = building.addFloor("Floor 0", this.findNode('Floor 0'))
 
-        const areaEntrance = floor.addArea('Entrance', this.findMesh('Area 1 - Entrance'), Color3.Random());
-        const areaWarehouse1 = floor.addArea('Warehouse 1', this.findMesh('Area 2 - Warehouse 1'), Color3.Random());
-        const areaWarehouse2 = floor.addArea('Warehouse 2', this.findMesh('Area 3 - Warehouse 2'), Color3.Random());
-        const areaFactory = floor.addArea('Factory', this.findMesh('Area 4 - Factory'), Color3.Random());
-        const areaLab1 = floor.addArea('Lab 1', this.findMesh('Area 5 - Lab 1'), Color3.Random());
-        const areaLab2 = floor.addArea('Lab 2', this.findMesh('Area 6 - Lab 2'), Color3.Random());
-        const areaLab3 = floor.addArea('Lab 3', this.findMesh('Area 7 - Lab 3'), Color3.Random());
-        const areaDressingRoom = floor.addArea('dressing room', this.findMesh('Area 8 - dressing room'), Color3.Random());
-        const areaPantry = floor.addArea('Pantry', this.findMesh('Area 9 - Pantry'), Color3.Random());
-        const areaWc1 = floor.addArea('WC 1', this.findMesh('Area 10 - WC 1'), Color3.Random());
-        const areaWc2 = floor.addArea('WC 2', this.findMesh('Area 11 - WC 2'), Color3.Random());
-        const areaOffice1 = floor.addArea('Office 1', this.findMesh('Area 12 - Office 1'), Color3.Random());
-        const areaOffice2 = floor.addArea('Office 2', this.findMesh('Area 13 - Office 2'), Color3.Random());
-        const areaOffice3 = floor.addArea('Office 3', this.findMesh('Area 14 - Office 3'), Color3.Random());
-        const areaOffice4 = floor.addArea('Office 4', this.findMesh('Area 15 - Office 4'), Color3.Random());
+        const areaEntrance = floor.addArea('area:entrance', 'Entrance', this.findMesh('Area 1 - Entrance'), Color3.Random());
+        const areaWarehouse1 = floor.addArea('area:warehouse-1', 'Warehouse 1', this.findMesh('Area 2 - Warehouse 1'), Color3.Random());
+        const areaWarehouse2 = floor.addArea('area:warehouse-2', 'Warehouse 2', this.findMesh('Area 3 - Warehouse 2'), Color3.Random());
+        const areaFactory = floor.addArea('area:factory', 'Factory', this.findMesh('Area 4 - Factory'), Color3.Random());
+        const areaLab1 = floor.addArea('area:lab-1', 'Lab 1', this.findMesh('Area 5 - Lab 1'), Color3.Random());
+        const areaLab2 = floor.addArea('area:lab-2', 'Lab 2', this.findMesh('Area 6 - Lab 2'), Color3.Random());
+        const areaLab3 = floor.addArea('area:lab-3', 'Lab 3', this.findMesh('Area 7 - Lab 3'), Color3.Random());
+        const areaDressingRoom = floor.addArea('area:dressing-room', 'dressing room', this.findMesh('Area 8 - dressing room'), Color3.Random());
+        const areaPantry = floor.addArea('area:pantry', 'Pantry', this.findMesh('Area 9 - Pantry'), Color3.Random());
+        const areaWc1 = floor.addArea('area:wc-1', 'WC 1', this.findMesh('Area 10 - WC 1'), Color3.Random());
+        const areaWc2 = floor.addArea('area:wc-2', 'WC 2', this.findMesh('Area 11 - WC 2'), Color3.Random());
+        const areaOffice1 = floor.addArea('area:office-1', 'Office 1', this.findMesh('Area 12 - Office 1'), Color3.Random());
+        const areaOffice2 = floor.addArea('area:office-2', 'Office 2', this.findMesh('Area 13 - Office 2'), Color3.Random());
+        const areaOffice3 = floor.addArea('area:office-3', 'Office 3', this.findMesh('Area 14 - Office 3'), Color3.Random());
+        const areaOffice4 = floor.addArea('area:office-4', 'Office 4', this.findMesh('Area 15 - Office 4'), Color3.Random());
 
-        const equipmentPaintingMachine = areaFactory.addEquipment('Paining Machine', this.findNode('Painting machine'))
+        const equipmentPaintingMachine = areaFactory.addEquipment('equipment:painter', 'Paining Machine', this.findNode('Painting machine'))
         equipmentPaintingMachine.stats.push(
             { name: 'Color', value: "Red", icon: "🖌️", topic: `factory/floor-0/factory/equipments/painter/color` },
             { name: "Temperature (Bath 1)", value: "24°C", icon: "🌡️", topic: "factory/floor-0/factory/equipments/painter/temperature0", format: v => `${round(v)}°C` },
@@ -236,6 +288,7 @@ export class ImplBuilder {
             const suffix = i === 0 ? '' : `.00${i}`
             
             return this.buildPress({
+                id: `equipment:press-${i}`,
                 area: areaFactory,
                 name: `Press 0${i + 1}`,
                 nodeName: `Press${suffix}`,
@@ -298,6 +351,25 @@ export class ImplBuilder {
         world.entityGroups.push(new EntityGroup(world, 'Factory', [
             ...equipmentPresses,
             equipmentPaintingMachine
+        ]))
+
+        /*
+        Movable parts flow between predefined waypoints. Each waypoint below is a
+        placement slot in an area; the part starts at the warehouse and hops to
+        others as `factory/parts/<id>/location` messages arrive.
+        */
+
+        const waypoints = [
+            this.addWaypointAtCenter(areaWarehouse1, 'waypoint:warehouse-1', 'Warehouse 1'),
+            this.addWaypointAtCenter(areaFactory, 'waypoint:factory', 'Factory'),
+            this.addWaypointAtCenter(areaWarehouse2, 'waypoint:warehouse-2', 'Warehouse 2'),
+            this.addWaypointAtCenter(areaEntrance, 'waypoint:entrance', 'Entrance'),
+        ]
+
+        const partA = this.spawnPart(world, 'part-a', 'Part A', waypoints[0]!)
+
+        world.entityGroups.push(new EntityGroup(world, 'Parts', [
+            partA,
         ]))
 
         return building

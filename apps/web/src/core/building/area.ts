@@ -2,9 +2,10 @@ import { AbstractMesh, Color3, Scene, TransformNode } from "@babylonjs/core"
 import { AreaMaterial } from "../shaders/areaShader"
 import { getLocalBoundingBox } from "../utils/bounds"
 import { damp } from "../utils/tween"
-import type { Building, Floor } from "./building"
-import { Entity, EntityFeature, EntityStatus, TagBody } from "./entity"
+import type { Floor } from "./building"
+import { EntityFeature, EntityStatus, StaticEntity, TagBody } from "./entity"
 import { Equipment } from "./equipment"
+import { Waypoint } from "./waypoint"
 import { PICK_PRIORITY } from "./pick-priority"
 
 /**
@@ -51,21 +52,20 @@ class AreaFadeFeature implements EntityFeature {
  * (including when the area has no equipment). Its detail card adds equipment-count
  * rows and an error row, and it renders a zone fade while active.
  */
-export class Area extends Entity<AbstractMesh> {
+export class Area extends StaticEntity<AbstractMesh> {
 
     readonly idPrefix = "area"
     readonly linkOffsetY = -30
     readonly pickPriority = PICK_PRIORITY.ROOM
 
-    readonly floor: Floor
     readonly equipments: Equipment[] = []
+    readonly waypoints: Waypoint[] = []
 
     readonly color: Color3
 
-    constructor(floor: Floor, name: string, node: AbstractMesh, color: Color3) {
-        super(name, node, floor)
+    constructor(id: string, floor: Floor, name: string, node: AbstractMesh, color: Color3) {
+        super(id, name, node, floor)
 
-        this.floor = floor
         this.color = color
 
         this.features.push(new AreaFadeFeature(this))
@@ -83,14 +83,16 @@ export class Area extends Entity<AbstractMesh> {
         super.focused = val
     }
 
-    get building(): Building {
-        return this.floor.building
-    }
-
-    addEquipment(name: string, node: TransformNode): Equipment {
-        const equipment = new Equipment(this, name, node)
+    addEquipment(id: string, name: string, node: TransformNode): Equipment {
+        const equipment = new Equipment(id, this, name, node)
         this.equipments.push(equipment)
         return equipment
+    }
+
+    addWaypoint(id: string, name: string, node: TransformNode): Waypoint {
+        const waypoint = new Waypoint(this, id, name, node)
+        this.waypoints.push(waypoint)
+        return waypoint
     }
 
     get status(): EntityStatus {

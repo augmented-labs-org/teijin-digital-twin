@@ -347,7 +347,7 @@ export class EntityTag {
     }
 
     private _toggleExpanded() {
-        const world = this.entity.floor.building.world
+        const world = this.entity.world
         const expanded = world.focusedEntity === this.entity
         if (expanded) {
             world.focusedEntity = undefined
@@ -392,7 +392,7 @@ export class EntityTag {
 
         const dt = this.scene.getEngine().getDeltaTime() / 1000
 
-        const world = this.entity.floor.building.world
+        const world = this.entity.world
         const expanded = world.focusedEntity === this.entity
 
         this._syncContent()
@@ -401,7 +401,7 @@ export class EntityTag {
         // treated as fully out of view.
         let lod = 0;
         if (this.entity.active && this.node.isEnabled()) {
-            lod = this.entity.floor.building.focused ? 2 : 1
+            lod = this.entity.building?.focused ? 2 : 1
         }
 
         for (const mesh of this._meshes()) {

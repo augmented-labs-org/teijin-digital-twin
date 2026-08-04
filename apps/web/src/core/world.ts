@@ -3,10 +3,12 @@ import { AdvancedDynamicTexture } from "@babylonjs/gui";
 import { GridMaterial } from "@babylonjs/materials";
 import { Building } from "./building/building";
 import { Entity } from "./building/entity";
+import { MovableEntity } from "./building/movable";
+import type { Waypoint } from "./building/waypoint";
 import { installPriorityPicking } from "./building/pick-priority";
 import { MapCamera } from "./camera/map-camera";
 import { MqttTelemetry } from "./telemetry/mqtt";
-import { InMemoryTimelineSource, Timeline, type EntityStateSnapshot, type SceneSnapshot, type TimelineChange } from "./telemetry/timeline";
+import { InMemoryTimelineSource, Timeline, type EntityStateSnapshot, type LocationRef, type SceneSnapshot, type TimelineChange } from "./telemetry/timeline";
 import { ImplBuilder } from "@/impl";
 
 export class EntityGroup {
@@ -84,8 +86,14 @@ export class World {
 
     //
 
-    /** Every attached entity (areas + equipment); each owns its tag and features. */
+    /** Every attached entity (areas + equipment + movables); each owns its tag and features. */
     private readonly _entities: Entity[] = []
+
+    /** Movable entities, owned flat by the world rather than by a floor. */
+    public readonly movables: MovableEntity[] = []
+
+    /** Every waypoint in the world, indexed by its id for location resolution. */
+    private readonly _waypointsById = new Map<string, Waypoint>()
 
     /** Live sensor feed from the Coreflux broker, wired to topic-bound stats. */
     public readonly mqtt = new MqttTelemetry()
@@ -182,10 +190,17 @@ export class World {
 
             this.buildings.push(building)
 
-            // Attach every area and its equipment. Each entity builds its own tag
-            // and render features (an area's zone fade, ...) and self-manages them.
+            // Index every waypoint so movable locations can be resolved by id.
             const areas = building.floors.flatMap(f => f.areas)
-            for (const entity of [...areas, ...areas.flatMap(a => a.equipments)]) {
+            for (const waypoint of areas.flatMap(a => a.waypoints)) {
+                this._waypointsById.set(waypoint.id, waypoint)
+            }
+
+            // Attach every area, its equipment, and the movables. Each entity builds
+            // its own tag and render features (an area's zone fade, ...) and
+            // self-manages them. Movables are projected through the same snapshot
+            // path as everything else, so they must be in `_entities` too.
+            for (const entity of [...areas, ...areas.flatMap(a => a.equipments), ...this.movables]) {
                 entity.attach(this.gui, this.scene)
                 this._entities.push(entity)
             }
@@ -203,7 +218,7 @@ export class World {
                     this.mqtt.register(stat.topic, (data) => {
                         const raw = data && typeof data === "object" && "value" in data ? data.value : data
                         const value = stat.format ? stat.format(raw) : String(raw)
-                        this.recordState(entity.key, { stats: { [stat.name]: value } })
+                        this.recordState(entity.id, { stats: { [stat.name]: value } })
                     })
                 }
             }
@@ -215,6 +230,15 @@ export class World {
             this._timelineObserver = this.timeline.onChanged.add((change) => {
                 this.applySnapshot(this.timeline.currentState(), change.animate)
             })
+
+            // Seed each movable onto its authored starting waypoint. Recorded like
+            // any other state so the movable is placed via the same projection path
+            // (and is present on the timeline from the first instant).
+            for (const movable of this.movables) {
+                if (movable.initialWaypoint) {
+                    this.recordState(movable.id, { location: { waypoint: movable.initialWaypoint.id } })
+                }
+            }
 
             this.mqtt.connect()
         } catch (err) {
@@ -295,6 +319,16 @@ export class World {
         this._timelineSource.record(key, partial, Date.now())
     }
 
+    /** Register a movable entity so the world attaches, projects, and tracks it. */
+    registerMovable(movable: MovableEntity) {
+        this.movables.push(movable)
+    }
+
+    /** Resolve a serializable {@link LocationRef} to a concrete waypoint (or none). */
+    resolveLocation(ref: LocationRef): Waypoint | undefined {
+        return this._waypointsById.get(ref.waypoint)
+    }
+
     /**
      * Whether the state change currently being projected should play transition
      * animations (real-time live update) or snap to the final pose (a seek or
@@ -312,7 +346,7 @@ export class World {
     applySnapshot(snapshot: SceneSnapshot, animate = true) {
         this._projectionAnimates = animate
         for (const entity of this._entities) {
-            const state = snapshot[entity.key]
+            const state = snapshot[entity.id]
             if (state) {
                 entity.applyState(state)
             }
@@ -326,6 +360,11 @@ export class World {
         building.activeFloor = floor
         for (let i = 0; i < building.floors.length; i++) {
             building.floors[i]!.node.setEnabled(i <= floor)
+        }
+        // Movables aren't children of the floor nodes, so refresh their visibility
+        // against the new active floor explicitly.
+        for (const movable of this.movables) {
+            movable.updateVisibility()
         }
     }
 
@@ -352,7 +391,7 @@ export class World {
             this._focusedBuilding.focused = true
         }
 
-        if (this.focusedEntity && this.focusedEntity.floor.building !== next) {
+        if (this.focusedEntity && this.focusedEntity.building !== next) {
             this.focusedEntity = undefined
         }
 

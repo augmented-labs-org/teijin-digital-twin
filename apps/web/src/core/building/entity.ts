@@ -1,6 +1,7 @@
 import { Observer, Scene, TransformNode } from "@babylonjs/core";
 import { AdvancedDynamicTexture, TextBlock } from "@babylonjs/gui";
-import { Floor } from "./building";
+import type { Building, Floor } from "./building";
+import type { World } from "../world";
 import { EntityTag } from "./tag";
 import type { EntityStateSnapshot } from "../telemetry/timeline";
 
@@ -59,14 +60,22 @@ export interface TagBody {
  * detail card via {@link buildDetailBody}.
  */
 export abstract class Entity<N extends TransformNode = TransformNode> {
+    /**
+     * Stable, unique identity used to key this entity's structured state on the
+     * timeline. Provided at construction (never derived from location), so it stays
+     * fixed even for movable entities that change which building/floor they are on,
+     * and maps cleanly onto a future database row.
+     */
+    readonly id: string
+
     /** Text shown on the label pill and the detail-card title. */
     readonly name: string
 
     /** The scene node this entity is anchored to and picked through. */
     readonly node: N
 
-    /** The floor that this entity is on */
-    readonly floor: Floor
+    /** The world this entity belongs to. */
+    readonly world: World
 
     /** Declares if the entity is focused, i.e., is being focused on the user-interface */
     private _focused = false
@@ -89,29 +98,22 @@ export abstract class Entity<N extends TransformNode = TransformNode> {
     private _tag?: EntityTag
     private _observer: Observer<Scene> | null = null
 
-    constructor(name: string, node: N, floor: Floor) {
+    constructor(id: string, name: string, node: N, world: World) {
+        this.id = id
         this.name = name
         this.node = node
-        this.floor = floor
+        this.world = world
     }
 
     get active() {
         return !!this.world.entityGroups.find(g => g.active && g.entities.includes(this))
     }
 
-    get world() {
-        return this.floor.building.world
-    }
-
     /**
-     * Stable identity used to key this entity's structured state in the timeline.
-     * Unique across the current model (area/equipment names don't collide within
-     * a building) and stable across sessions, so it maps cleanly onto a future
-     * database row.
+     * The building this entity currently belongs to, if any. Static entities are
+     * always in one; a movable entity has none while it is unplaced.
      */
-    get key(): string {
-        return `${this.idPrefix}:${this.floor.building.name}:${this.name}`
-    }
+    abstract get building(): Building | undefined
 
     /**
      * Project a structured state snapshot onto this entity. Entities are pure
@@ -174,5 +176,24 @@ export abstract class Entity<N extends TransformNode = TransformNode> {
         for (const feature of this.features) {
             feature.detach()
         }
+    }
+}
+
+/**
+ * An {@link Entity} with a fixed place in the building hierarchy: it lives on one
+ * {@link Floor} for its whole life. Areas and equipment are static. (Movable
+ * entities extend {@link Entity} directly and track their location as state.)
+ */
+export abstract class StaticEntity<N extends TransformNode = TransformNode> extends Entity<N> {
+    /** The floor that this entity is on. */
+    readonly floor: Floor
+
+    constructor(id: string, name: string, node: N, floor: Floor) {
+        super(id, name, node, floor.building.world)
+        this.floor = floor
+    }
+
+    get building(): Building {
+        return this.floor.building
     }
 }

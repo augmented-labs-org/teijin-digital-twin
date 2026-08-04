@@ -1,5 +1,12 @@
 import { Observable } from "@babylonjs/core"
 
+/**
+ * A serializable pointer to where a movable entity currently is. Kept as plain
+ * strings (never object refs) so it survives a timeline/database round-trip; the
+ * world resolves it back to a concrete {@link Waypoint} when projecting.
+ */
+export type LocationRef = | { waypoint: string }
+
 export type EntityStateSnapshot = {
     /** Displayed value per stat, keyed by {@link EntityStat.name}. */
     stats?: Record<string, string | number>
@@ -8,9 +15,12 @@ export type EntityStateSnapshot = {
     running?: boolean
     errored?: boolean
     errorReason?: string
+
+    /** Current placement of a movable entity; ignored by static entities. */
+    location?: LocationRef
 }
 
-/** The structured state of the whole scene, keyed by {@link Entity.key}. */
+/** The structured state of the whole scene, keyed by {@link Entity.id}. */
 export type SceneSnapshot = Record<string, EntityStateSnapshot>
 
 type TimeRange = { start: number; end: number }

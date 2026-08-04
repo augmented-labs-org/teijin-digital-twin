@@ -1,7 +1,6 @@
 import { Observable, TransformNode } from "@babylonjs/core"
 import type { Area } from "./area"
-import type { Building } from "./building"
-import { Entity, EntityStatus, TagBody } from "./entity"
+import { EntityStatus, StaticEntity, TagBody } from "./entity"
 import { PICK_PRIORITY } from "./pick-priority"
 import type { EntityStateSnapshot } from "../telemetry/timeline"
 
@@ -9,7 +8,7 @@ import type { EntityStateSnapshot } from "../telemetry/timeline"
  * An {@link Entity} for a single piece of equipment. Its status comes straight
  * off its own state; the detail card adds a "Running" row and an error row.
  */
-export class Equipment extends Entity<TransformNode> {
+export class Equipment extends StaticEntity<TransformNode> {
     readonly idPrefix = "equipment"
     readonly linkOffsetY = -30
     readonly pickPriority = PICK_PRIORITY.EQUIPMENT
@@ -30,14 +29,10 @@ export class Equipment extends Entity<TransformNode> {
     private _errored = false
     private _errorReason?: string
 
-    constructor(area: Area, name: string, node: TransformNode) {
-        super(name, node, area.floor)
+    constructor(id: string, area: Area, name: string, node: TransformNode) {
+        super(id, name, node, area.floor)
 
         this.area = area
-    }
-
-    get building(): Building {
-        return this.area.building
     }
 
     get online() {

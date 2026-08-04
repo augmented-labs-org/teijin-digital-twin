@@ -20,8 +20,8 @@ export class Floor {
         this.node = node
     }
 
-    addArea(name: string, node: AbstractMesh, color?: Color3): Area {
-        const area = new Area(this, name, node, color ?? Color3.Red())
+    addArea(id: string, name: string, node: AbstractMesh, color?: Color3): Area {
+        const area = new Area(id, this, name, node, color ?? Color3.Red())
         this.areas.push(area)
         return area
     }

@@ -58,6 +58,18 @@ TOPIC_ROOT = "factory"
 PUBLISH_INTERVAL_S = 2.0        # seconds between full sensor sweeps
 QOS = 0
 
+# A movable part hops through these waypoints in order. The ids match the
+# waypoints authored in apps/web/src/impl.ts; the web app resolves each to a
+# placement slot and snaps the part onto it.
+PART_ID = "part-a"
+PART_WAYPOINTS = [
+    "waypoint:warehouse-1",
+    "waypoint:factory",
+    "waypoint:warehouse-2",
+    "waypoint:entrance",
+]
+PART_MOVE_EVERY_SWEEPS = 3      # hop to the next waypoint every N sweeps
+
 # Probability, per press per sweep, of a fault appearing / clearing.
 FAULT_ONSET_P = 0.01
 FAULT_CLEAR_P = 0.25
@@ -385,6 +397,15 @@ def publish_sweep(client: mqtt.Client, areas: list[AreaSim]) -> int:
     return count
 
 
+def publish_part_location(client: mqtt.Client, waypoint_id: str) -> None:
+    """Relocate the movable part onto `waypoint_id`."""
+    client.publish(
+        f"{TOPIC_ROOT}/parts/{PART_ID}/location",
+        json.dumps({"waypoint": waypoint_id, "ts": now_iso()}),
+        qos=QOS,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Main loop
 # --------------------------------------------------------------------------- #
@@ -415,8 +436,19 @@ def main() -> None:
     )
 
     try:
+        sweep = 0
+        part_idx = 0
         while running:
             published = publish_sweep(client, areas)
+
+            # Hop the part to the next waypoint every few sweeps.
+            if sweep % PART_MOVE_EVERY_SWEEPS == 0:
+                waypoint_id = PART_WAYPOINTS[part_idx]
+                publish_part_location(client, waypoint_id)
+                print(f"[sim] {now_iso()} — part {PART_ID} -> {waypoint_id}")
+                part_idx = (part_idx + 1) % len(PART_WAYPOINTS)
+
+            sweep += 1
             print(f"[sim] {now_iso()} — published {published} messages")
             # Sleep in small slices so Ctrl-C is responsive.
             slept = 0.0
