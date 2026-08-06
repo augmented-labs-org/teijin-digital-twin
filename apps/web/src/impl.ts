@@ -1,41 +1,99 @@
-import { Area } from "@/core/building/area";
-import { AbstractMesh, AnimationGroup, Color3, ISceneLoaderAsyncResult, MeshBuilder, Node, StandardMaterial, TransformNode, Vector3 } from "@babylonjs/core";
-import { Building } from "./core/building/building";
-import { Part } from "./core/building/part";
-import { Waypoint } from "./core/building/waypoint";
-import { EntityGroup, World } from "./core/world";
+import { AbstractMesh, Color3, ISceneLoaderAsyncResult, TransformNode } from "@babylonjs/core"
+import { Area } from "./core/building/area"
+import { Building } from "./core/building/building"
+import { Entity, EntityStat } from "./core/building/entity"
+import { EntityGroup, World } from "./core/world"
 
-class SemaphoreLight {
+/*
+Teijin Leça — the site simulated by `tools/teijin.py`.
 
-    private nodeOff: Node
+Two machines publish under `teijin/leca/<machine>/<source>/<Signal_Name>`, one
+sweep per second, 106 signals in total:
 
-    private nodeOn: Node
+    php-1250          plc-a (11) · plc-b (11) · energy (20)
+    pintura-classica  plc (44)  · energy (20)
 
-    private _on = false
+Every one of those signals is wired below. Payloads are `{value, unit, ts}` — the
+world unwraps `.value` before handing it to a stat's `format`, so only the raw
+value is dealt with here.
 
-    constructor(nodeOff: Node, nodeOn: Node) {
-        this.nodeOff = nodeOff
-        this.nodeOn = nodeOn
+Nodes are matched to `teijin.glb` by name. Most of it is unambiguous (`Bath 1-3`
+against the `Bath_{1,2,3}_*` signals, `Cabin 1-2` against `Cabin_{1,2}_*`,
+`Drying Tunel` against `Dryer_Temperature`); the rest is inferred:
 
-        this.nodeOff.setEnabled(true)
-        this.nodeOn.setEnabled(false)
-    }
+  - `Press 1` is taken to be the PHP 1250. The model has a second press
+    (`Press 2`) that the simulator doesn't publish, so it is left unmapped.
+  - `Painting Hooks` — the hanger conveyor running the length of the line — is
+    used for the painting line itself, since `Line_Speed` is that conveyor's
+    speed and the baths, tunnel and booths it passes through are their own
+    equipment.
+  - The two Shelly 3EM meters have no geometry in the model, so their readings
+    sit on the stats of the area their machine is in, as does the paint room
+    climate (`Paint_Room_*`, which has no room of its own in the model).
+  - Unmapped for want of signals: `Press 2`, `Polimerization Tunel`, `Tanks`.
 
-    get on() {
-        return this._on
-    }
+The model's `Press down` / `Press up` animation groups are unused for now.
+*/
 
-    set on(val: boolean) {
-        if (this._on === val) {
-            return
-        }
+const SITE = "teijin/leca"
 
-        this._on = val
+const PHP = `${SITE}/php-1250`
+const PHP_A = `${PHP}/plc-a`
+const PHP_B = `${PHP}/plc-b`
+const PHP_ENERGY = `${PHP}/energy`
 
-        this.nodeOff.setEnabled(!val)
-        this.nodeOn.setEnabled(val)
-    }
+const PINTURA = `${SITE}/pintura-classica`
+const PINTURA_PLC = `${PINTURA}/plc`
+const PINTURA_ENERGY = `${PINTURA}/energy`
+
+/** `Movable_Platen_State` is the press cycle phase as an int. */
+const PLATEN_STATES = ["Stopped", "Closing", "Pressing", "Opening"]
+
+/**
+ * Painting-line alarm codes. `Alarm_1` is process/mechanical, `Alarm_2` is
+ * derived from a bath reading leaving its published Min/Max band, `Alarm_3` is
+ * utilities. 0 means no active alarm.
+ */
+const ALARM_LABELS: Record<number, string> = {
+    205: "Line jam",
+    402: "Conveyor drive",
+    118: "Hanger",
+    331: "Oven damper",
+    101: "Bath temperature",
+    102: "Bath pressure",
+    103: "Bath pH",
+    510: "Compressed air low",
+    522: "Exhaust fan",
 }
+
+/*
+Value formatting
+*/
+
+/** A missing reading (nothing published on that topic yet). */
+const NO_VALUE = "—"
+
+const num = (raw: unknown, digits = 1) =>
+    raw === undefined || raw === null ? NO_VALUE : Number(raw).toFixed(digits)
+
+/** Trims trailing zeros, so a configuration limit reads `52` and not `52.0`. */
+const trim = (raw: unknown) => (raw === undefined || raw === null ? NO_VALUE : String(Number(raw)))
+
+const round = (raw: unknown) => Math.round(Number(raw))
+
+const alarm = (raw: unknown) => {
+    const code = round(raw)
+    if (code === 0) {
+        return "None"
+    }
+    return `${ALARM_LABELS[code] ?? "Unknown"} (${code})`
+}
+
+const yesNo = (raw: unknown) => (raw === true ? "Yes" : "No")
+
+/** Unwraps a `{value, unit, ts}` payload; tolerates a bare value. */
+const unwrap = (data: unknown) =>
+    data && typeof data === "object" && "value" in data ? (data as { value: unknown }).value : data
 
 /*
 
@@ -46,8 +104,6 @@ export class ImplBuilder {
     private result: ISceneLoaderAsyncResult
 
     private nodesByName: Map<string, TransformNode>
-
-    private animationsByName: Map<string, AnimationGroup>
 
     constructor(result: ISceneLoaderAsyncResult) {
         this.result = result
@@ -60,11 +116,6 @@ export class ImplBuilder {
 
         for (const node of result.meshes) {
             this.nodesByName.set(node.name, node)
-        }
-
-        this.animationsByName = new Map()
-        for (const group of result.animationGroups) {
-            this.animationsByName.set(group.name, group)
         }
     }
 
@@ -91,164 +142,449 @@ export class ImplBuilder {
         throw new Error(`Expected mesh of name '${name}' but found TransformNode`)
     }
 
-    findAnimation(name: string) {
-        const group = this.animationsByName.get(name)
-        if (!group) {
-            throw new Error(`Could not find animation of name '${name}'`)
-        }
-
-        return group
-    }
-
     /*
-
+    Telemetry wiring
     */
 
     /**
-     * Author a waypoint in `area`, anchored to a fresh node placed at the floor
-     * level of the area's center. Movables snap onto this node when placed here.
+     * Mirror a machine's retained `<machine>/status` message onto an entity. Raw
+     * messages are interpreted into structured state and recorded on the timeline;
+     * the world projects that state back onto the entity, so live and scrubbed
+     * views go through the exact same path.
      */
-    addWaypointAtCenter(area: Area, id: string, name: string): Waypoint {
-        const scene = area.node.getScene()
-        const { min, max } = area.node.getHierarchyBoundingVectors(true)
+    private bindMachineStatus(entity: Entity, statusTopic: string) {
+        const world = entity.world
 
-        const node = new TransformNode(`waypoint:${id}`, scene)
-        node.position = new Vector3((min.x + max.x) / 2, min.y, (min.z + max.z) / 2)
-
-        return area.addWaypoint(id, name, node)
-    }
-
-    /**
-     * Spawn a part as a small box mesh and register it as a movable with the world.
-     * It has no position of its own — it is placed onto `initialWaypoint`, which
-     * the world seeds once state projection starts.
-     */
-    spawnPart(world: World, id: string, name: string, initialWaypoint: Waypoint): Part {
-        const scene = initialWaypoint.node.getScene()
-
-        const box = MeshBuilder.CreateBox(`part:${id}`, { size: 0.6 }, scene)
-        const material = new StandardMaterial(`part:${id}:mat`, scene)
-        material.diffuseColor = new Color3(0.23, 0.51, 0.96)
-        box.material = material
-
-        const part = new Part(id, world, name, box)
-        part.initialWaypoint = initialWaypoint
-        world.registerMovable(part)
-
-        // Live movement: a published waypoint id relocates the part through the
-        // same recorded-state path everything else uses.
-        world.mqtt.register(`factory/parts/${id}/location`, (data) => {
-            const waypoint = data && typeof data === "object" && "waypoint" in data
-                ? String((data as { waypoint: unknown }).waypoint)
-                : typeof data === "string" ? data : undefined
-            if (waypoint) {
-                world.recordState(part.id, { location: { waypoint } })
+        world.mqtt.register(statusTopic, (data) => {
+            if (typeof data !== "object" || !data) {
+                return
             }
-        })
 
-        return part
+            const online = "online" in data && data.online === true
+            const running = "running" in data && data.running === true
+            const errored = "errored" in data && data.errored === true
+            const errorReason =
+                errored && "errorReason" in data ? (data["errorReason"] as string) : undefined
+
+            world.recordState(entity.id, { online, running, errored, errorReason })
+        })
     }
 
-    /*
+    /**
+     * Push a stat whose displayed value is composed from several topics. `topics`
+     * maps a key to a topic, and the **first** entry is the primary reading:
+     * messages on it re-render the row and record it on the timeline, while the
+     * others only refresh the values they contribute. That suits the shape of
+     * this PLC's data — configuration limits and recipe setpoints are constants
+     * republished every sweep, so they deserve neither a row of their own nor a
+     * timeline sample of their own.
+     *
+     * The stat carries no `topic`, so the world doesn't subscribe it a second
+     * time; the rendered string still reaches the scene through the normal
+     * record → project path, exactly like a single-topic stat.
+     */
+    private addCompositeStat(
+        entity: Entity,
+        spec: {
+            name: string
+            icon: string
+            topics: Record<string, string>
+            render: (values: Record<string, unknown>) => string
+        },
+    ) {
+        const world = entity.world
+        const values: Record<string, unknown> = {}
 
-    */
+        const stat: EntityStat = { name: spec.name, icon: spec.icon, value: NO_VALUE }
+        entity.stats.push(stat)
 
+        const [primary] = Object.keys(spec.topics)
 
-    buildPress({
-        id, area, name, nodeName, greenLightOffNodeName, greenLightOnNodeName, redLightOffNodeName, redLightOnNodeName, animationPressDownName, animationPressUpName, topicPrefix
-    }: {
-        id: string,
-        area: Area,
-        name: string,
-        nodeName: string,
-        greenLightOffNodeName: string,
-        greenLightOnNodeName: string,
-        redLightOffNodeName: string,
-        redLightOnNodeName: string,
-        animationPressUpName: string,
-        animationPressDownName: string,
-        topicPrefix: string
-    }) {
-        const world = area.world
+        for (const [key, topic] of Object.entries(spec.topics)) {
+            world.mqtt.register(topic, (data) => {
+                values[key] = unwrap(data)
 
-        const node = this.findNode(nodeName)
+                if (key === primary) {
+                    world.recordState(entity.id, { stats: { [spec.name]: spec.render(values) } })
+                }
+            })
+        }
+    }
 
-        const animationPressDown = this.findAnimation(animationPressDownName)
-        animationPressDown.speedRatio = 10.0
-        const animationPressUp = this.findAnimation(animationPressUpName)
-        animationPressDown.speedRatio = 8.0
+    /**
+     * A reading published alongside the `_Min`/`_Max` limits configured for it.
+     * The limits are folded into the reading instead of taking two rows of their
+     * own: `58.2 °C (52–64)`.
+     */
+    private addBandedStat(
+        entity: Entity,
+        spec: { name: string; icon: string; topic: string; unit: string; digits?: number },
+    ) {
+        this.addCompositeStat(entity, {
+            name: spec.name,
+            icon: spec.icon,
+            topics: {
+                value: spec.topic,
+                min: `${spec.topic}_Min`,
+                max: `${spec.topic}_Max`,
+            },
+            render: (v) => {
+                const reading = `${num(v.value, spec.digits ?? 1)} ${spec.unit}`
+                if (v.min === undefined || v.max === undefined) {
+                    return reading
+                }
+                return `${reading} (${trim(v.min)}–${trim(v.max)})`
+            },
+        })
+    }
 
-        const press = area.addEquipment(id, name, node);
+    /**
+     * A reading published alongside the setpoint it is tracking, shown as
+     * `147.2 °C → 148`.
+     */
+    private addSetpointStat(
+        entity: Entity,
+        spec: {
+            name: string
+            icon: string
+            topic: string
+            setpointTopic: string
+            unit: string
+            digits?: number
+        },
+    ) {
+        this.addCompositeStat(entity, {
+            name: spec.name,
+            icon: spec.icon,
+            topics: { value: spec.topic, setpoint: spec.setpointTopic },
+            render: (v) => {
+                const reading = `${num(v.value, spec.digits ?? 1)} ${spec.unit}`
+                return v.setpoint === undefined ? reading : `${reading} → ${trim(v.setpoint)}`
+            },
+        })
+    }
 
-        const lightGreen = new SemaphoreLight(this.findNode(greenLightOffNodeName), this.findNode(greenLightOnNodeName))
-        const lightRed = new SemaphoreLight(this.findNode(redLightOffNodeName), this.findNode(redLightOnNodeName))
+    /**
+     * One Shelly 3EM measurement across all three phases, on a single row as
+     * `A · B · C` — three rows per meter instead of eighteen.
+     */
+    private addPhaseStat(
+        entity: Entity,
+        spec: {
+            name: string
+            icon: string
+            base: string
+            signal: string
+            unit: string
+            digits?: number
+        },
+    ) {
+        const digits = spec.digits ?? 1
 
-        press.stats.push(
-            { name: 'Actuation', value: "OFF", icon: "⚙️", topic: `${topicPrefix}/actuation`, format: v => v === true ? 'ON' : 'OFF' },
-            { name: 'Force', value: "0 N", icon: "💪", topic: `${topicPrefix}/force`, format: v => `${Math.round(Number(v))} N` }
+        this.addCompositeStat(entity, {
+            name: spec.name,
+            icon: spec.icon,
+            topics: {
+                a: `${spec.base}/Phase_A_${spec.signal}`,
+                b: `${spec.base}/Phase_B_${spec.signal}`,
+                c: `${spec.base}/Phase_C_${spec.signal}`,
+            },
+            render: (v) =>
+                `${num(v.a, digits)} · ${num(v.b, digits)} · ${num(v.c, digits)} ${spec.unit}`.trim(),
+        })
+    }
+
+    /**
+     * The 20 signals of a Shelly 3EM: the two totals, then each per-phase
+     * measurement as an `A · B · C` triple. The meters aren't in the model, so
+     * these go onto the area whose machine they meter.
+     */
+    private addEnergyStats(entity: Entity, base: string) {
+        entity.stats.push(
+            {
+                name: "Total Power",
+                value: NO_VALUE,
+                icon: "⚡",
+                topic: `${base}/Total_Active_Power`,
+                format: (v) => `${num(v, 1)} kW`,
+            },
+            {
+                name: "Total Current",
+                value: NO_VALUE,
+                icon: "🔌",
+                topic: `${base}/Total_Current`,
+                format: (v) => `${num(v, 1)} A`,
+            },
         )
 
-        // Play an animation from the start, or snap straight to its final pose.
-        // Snapping is used when scrubbing/seeking so the press jumps to the sought
-        // state instantly instead of animating through the transition.
-        const playOrSnap = (group: AnimationGroup, snap: boolean) => {
-            group.play(false)
-            if (snap) {
-                group.goToFrame(group.to)
-                group.pause()
+        this.addPhaseStat(entity, { name: "Power", icon: "⚡", base, signal: "Active_Power", unit: "kW" })
+        this.addPhaseStat(entity, { name: "Current", icon: "🔌", base, signal: "Current", unit: "A", digits: 0 })
+        this.addPhaseStat(entity, { name: "Voltage", icon: "🔋", base, signal: "Voltage", unit: "V", digits: 0 })
+        this.addPhaseStat(entity, { name: "Power Factor", icon: "📐", base, signal: "Power_Factor", unit: "", digits: 2 })
+        this.addPhaseStat(entity, { name: "Apparent", icon: "📊", base, signal: "Apparent_Power", unit: "kVA" })
+        this.addPhaseStat(entity, { name: "Frequency", icon: "〰️", base, signal: "Frequency", unit: "Hz" })
+    }
+
+    /*
+    Equipment
+    */
+
+    /**
+     * The compression press: `plc-a` — the molding cycle, what is being made and
+     * where the platen is — followed by `plc-b`, a second PLC on the same machine
+     * carrying the heated tooling (four platen zones tracking their recipe
+     * setpoints, plus the two mold thermocouples that dip when a cold charge is
+     * laid on the open mold).
+     */
+    private buildPress(area: Area) {
+        const press = area.addEquipment("equipment:php-1250", "PHP 1250", this.findNode("Press 1"))
+
+        this.bindMachineStatus(press, `${PHP}/status`)
+
+        press.stats.push(
+            { name: "Product", value: NO_VALUE, icon: "🏷️", topic: `${PHP_A}/Product_Description` },
+            {
+                name: "Parts",
+                value: NO_VALUE,
+                icon: "🔢",
+                topic: `${PHP_A}/Part_Counter`,
+                format: (v) => `${round(v)}`,
+            },
+        )
+
+        this.addSetpointStat(press, {
+            name: "Pressure",
+            icon: "💪",
+            topic: `${PHP_A}/Pressure`,
+            setpointTopic: `${PHP_A}/Target_Pressure`,
+            unit: "bar",
+        })
+
+        press.stats.push(
+            {
+                name: "Platen",
+                value: NO_VALUE,
+                icon: "📏",
+                topic: `${PHP_A}/Movable_Platen_Position`,
+                format: (v) => `${num(v, 0)} mm`,
+            },
+            {
+                name: "Platen State",
+                value: NO_VALUE,
+                icon: "⚙️",
+                topic: `${PHP_A}/Movable_Platen_State`,
+                format: (v) => PLATEN_STATES[round(v)] ?? NO_VALUE,
+            },
+            {
+                name: "Platen Speed",
+                value: NO_VALUE,
+                icon: "🏃",
+                topic: `${PHP_A}/Speed`,
+                format: (v) => `${num(v, 1)} mm/s`,
+            },
+        )
+
+        this.addSetpointStat(press, {
+            name: "Compression",
+            icon: "⏱️",
+            topic: `${PHP_A}/Compression_Time`,
+            setpointTopic: `${PHP_A}/Target_Time`,
+            unit: "s",
+        })
+
+        press.stats.push(
+            {
+                name: "Elapsed",
+                value: NO_VALUE,
+                icon: "🔄",
+                topic: `${PHP_A}/Total_Time`,
+                format: (v) => `${num(v, 1)} s`,
+            },
+            {
+                name: "Remaining",
+                value: NO_VALUE,
+                icon: "⌛",
+                topic: `${PHP_A}/Remaining_Time`,
+                format: (v) => `${num(v, 1)} s`,
+            },
+        )
+
+        for (const platen of ["Fixed", "Movable"] as const) {
+            for (const zone of [1, 2]) {
+                this.addSetpointStat(press, {
+                    name: `${platen} Platen ${zone}`,
+                    icon: "🌡️",
+                    topic: `${PHP_B}/${platen}_Platen_Temperature_${zone}`,
+                    setpointTopic: `${PHP_B}/${platen}_Platen_Temperature_${zone}_Setpoint`,
+                    unit: "°C",
+                })
             }
         }
 
-        // View side-effects (lights + press animation) react to the equipment's
-        // `running` state rather than to raw messages, so they are reproduced
-        // identically whether the state changed from live data or from scrubbing
-        // history back onto the press. The animation only plays on an actual
-        // running transition; other state changes (online/errored) don't retrigger it.
-        const setRunningView = (running: boolean, snap: boolean) => {
-            if (running) {
-                animationPressUp.stop()
-                playOrSnap(animationPressDown, snap)
-                lightRed.on = false
-                lightGreen.on = true
-            } else {
-                animationPressDown.stop()
-                playOrSnap(animationPressUp, snap)
-                lightRed.on = true
-                lightGreen.on = false
-            }
-        }
-
-        let lastRunning = press.running
-        setRunningView(lastRunning, true)
-        press.onStateChanged.add(() => {
-            if (press.running === lastRunning) {
-                return
-            }
-            lastRunning = press.running
-            setRunningView(press.running, !world.projectionAnimates)
-        })
-
-        // Raw broker messages are interpreted into structured state and recorded
-        // on the timeline; the world projects the recorded state back onto the
-        // press (setting the fields above) for both live and scrubbed views.
-        world.mqtt.register(`${topicPrefix}/status`, (data) => {
-            if (typeof data !== 'object' || !data) {
-                return
-            }
-
-            const online = 'online' in data && typeof data.online === 'boolean' && data.online
-            const running = 'running' in data && typeof data.running === 'boolean' && data.running
-            const errored = 'errored' in data && typeof data.errored === 'boolean' && data.errored
-            const errorReason = errored && 'errorReason' in data ? (data['errorReason'] as string) : undefined
-
-            world.recordState(press.id, { online, running, errored, errorReason })
-        })
+        press.stats.push(
+            {
+                name: "Mold Cavity",
+                value: NO_VALUE,
+                icon: "🌡️",
+                topic: `${PHP_B}/Mold_Cavity_Temperature`,
+                format: (v) => `${num(v, 1)} °C`,
+            },
+            {
+                name: "Mold Male",
+                value: NO_VALUE,
+                icon: "🌡️",
+                topic: `${PHP_B}/Mold_Male_Temperature`,
+                format: (v) => `${num(v, 1)} °C`,
+            },
+            {
+                name: "Cycle Time",
+                value: NO_VALUE,
+                icon: "📐",
+                topic: `${PHP_B}/Theoretical_Cycle_Time`,
+                format: (v) => `${num(v, 0)} s`,
+            },
+        )
 
         return press
     }
 
+    /**
+     * The painting line's own signals — the hanger conveyor's speed, the downtime
+     * flag and the three alarm words. Anchored to the conveyor, since the baths,
+     * tunnel and booths it runs through are equipment in their own right.
+     */
+    private buildPaintingLine(area: Area) {
+        const line = area.addEquipment(
+            "equipment:pintura-classica",
+            "Pintura Clássica",
+            this.findNode("Painting Hooks"),
+        )
+        const world = line.world
+
+        this.bindMachineStatus(line, `${PINTURA}/status`)
+
+        // `Machine_State` and `Downtime` are the two sides of the line running or
+        // not, which the status message above already carries — so the signal
+        // drives `running` rather than a row of its own, and only the downtime
+        // side is displayed.
+        world.mqtt.register(`${PINTURA_PLC}/Machine_State`, (data) => {
+            world.recordState(line.id, { running: unwrap(data) === true })
+        })
+
+        line.stats.push(
+            {
+                name: "Line Speed",
+                value: NO_VALUE,
+                icon: "🏃",
+                topic: `${PINTURA_PLC}/Line_Speed`,
+                format: (v) => `${num(v, 2)} m/min`,
+            },
+            {
+                name: "Downtime",
+                value: NO_VALUE,
+                icon: "🛑",
+                topic: `${PINTURA_PLC}/Downtime`,
+                format: yesNo,
+            },
+            {
+                name: "Alarm 1",
+                value: NO_VALUE,
+                icon: "🚨",
+                topic: `${PINTURA_PLC}/Alarm_1`,
+                format: alarm,
+            },
+            {
+                name: "Alarm 2",
+                value: NO_VALUE,
+                icon: "🚨",
+                topic: `${PINTURA_PLC}/Alarm_2`,
+                format: alarm,
+            },
+            {
+                name: "Alarm 3",
+                value: NO_VALUE,
+                icon: "🚨",
+                topic: `${PINTURA_PLC}/Alarm_3`,
+                format: alarm,
+            },
+        )
+
+        return line
+    }
+
+    /**
+     * A pre-treatment bath: temperature and pressure, each shown against the
+     * Min/Max band the PLC publishes beside it — the same band `Alarm_2` on the
+     * line is derived from. Bath 1 is the alkaline degrease, so it also carries
+     * the pH probe.
+     */
+    private buildBath(area: Area, index: number, role: string, hasPh: boolean) {
+        const bath = area.addEquipment(
+            `equipment:bath-${index}`,
+            `Bath ${index} (${role})`,
+            this.findNode(`Bath ${index}`),
+        )
+
+        this.bindMachineStatus(bath, `${PINTURA}/status`)
+
+        this.addBandedStat(bath, {
+            name: "Temperature",
+            icon: "🌡️",
+            topic: `${PINTURA_PLC}/Bath_${index}_Temperature`,
+            unit: "°C",
+        })
+        this.addBandedStat(bath, {
+            name: "Pressure",
+            icon: "💧",
+            topic: `${PINTURA_PLC}/Bath_${index}_Pressure`,
+            unit: "bar",
+            digits: 2,
+        })
+
+        if (hasPh) {
+            bath.stats.push({
+                name: "pH",
+                value: NO_VALUE,
+                icon: "🧪",
+                topic: `${PINTURA_PLC}/Bath_${index}_Ph`,
+                format: (v) => num(v, 2),
+            })
+        }
+
+        return bath
+    }
+
+    /**
+     * A paint booth (`Cabin N` in the model, `Cabin_N_*` on the PLC): climate
+     * controlled, so both readings come with a band.
+     */
+    private buildBooth(area: Area, index: number) {
+        const booth = area.addEquipment(
+            `equipment:booth-${index}`,
+            `Paint Booth ${index}`,
+            this.findNode(`Cabin ${index}`),
+        )
+
+        this.bindMachineStatus(booth, `${PINTURA}/status`)
+
+        this.addBandedStat(booth, {
+            name: "Temperature",
+            icon: "🌡️",
+            topic: `${PINTURA_PLC}/Cabin_${index}_Temperature`,
+            unit: "°C",
+        })
+        this.addBandedStat(booth, {
+            name: "Humidity",
+            icon: "💧",
+            topic: `${PINTURA_PLC}/Cabin_${index}_Humidity`,
+            unit: "%",
+        })
+
+        return booth
+    }
+
     /*
-    
+
     */
 
     build(world: World): Building {
@@ -256,120 +592,106 @@ export class ImplBuilder {
 
         //
 
-        const building = new Building(world, 'Factory', buildingRootNode)
+        const building = new Building(world, 'Teijin Leça', buildingRootNode)
 
-        const floor = building.addFloor("Floor 0", this.findNode('Floor 0'))
+        const floor = building.addFloor("Floor 0", this.findNode('Floor'))
 
-        const areaEntrance = floor.addArea('area:entrance', 'Entrance', this.findMesh('Area 1 - Entrance'), Color3.Random());
-        const areaWarehouse1 = floor.addArea('area:warehouse-1', 'Warehouse 1', this.findMesh('Area 2 - Warehouse 1'), Color3.Random());
-        const areaWarehouse2 = floor.addArea('area:warehouse-2', 'Warehouse 2', this.findMesh('Area 3 - Warehouse 2'), Color3.Random());
-        const areaFactory = floor.addArea('area:factory', 'Factory', this.findMesh('Area 4 - Factory'), Color3.Random());
-        const areaLab1 = floor.addArea('area:lab-1', 'Lab 1', this.findMesh('Area 5 - Lab 1'), Color3.Random());
-        const areaLab2 = floor.addArea('area:lab-2', 'Lab 2', this.findMesh('Area 6 - Lab 2'), Color3.Random());
-        const areaLab3 = floor.addArea('area:lab-3', 'Lab 3', this.findMesh('Area 7 - Lab 3'), Color3.Random());
-        const areaDressingRoom = floor.addArea('area:dressing-room', 'dressing room', this.findMesh('Area 8 - dressing room'), Color3.Random());
-        const areaPantry = floor.addArea('area:pantry', 'Pantry', this.findMesh('Area 9 - Pantry'), Color3.Random());
-        const areaWc1 = floor.addArea('area:wc-1', 'WC 1', this.findMesh('Area 10 - WC 1'), Color3.Random());
-        const areaWc2 = floor.addArea('area:wc-2', 'WC 2', this.findMesh('Area 11 - WC 2'), Color3.Random());
-        const areaOffice1 = floor.addArea('area:office-1', 'Office 1', this.findMesh('Area 12 - Office 1'), Color3.Random());
-        const areaOffice2 = floor.addArea('area:office-2', 'Office 2', this.findMesh('Area 13 - Office 2'), Color3.Random());
-        const areaOffice3 = floor.addArea('area:office-3', 'Office 3', this.findMesh('Area 14 - Office 3'), Color3.Random());
-        const areaOffice4 = floor.addArea('area:office-4', 'Office 4', this.findMesh('Area 15 - Office 4'), Color3.Random());
-
-        const equipmentPaintingMachine = areaFactory.addEquipment('equipment:painter', 'Paining Machine', this.findNode('Painting machine'))
-        equipmentPaintingMachine.stats.push(
-            { name: 'Color', value: "Red", icon: "🖌️", topic: `factory/floor-0/factory/equipments/painter/color` },
-            { name: "Temperature (Bath 1)", value: "24°C", icon: "🌡️", topic: "factory/floor-0/factory/equipments/painter/temperature0", format: v => `${round(v)}°C` },
-            { name: "Temperature (Bath 2)", value: "24°C", icon: "🌡️", topic: "factory/floor-0/factory/equipments/painter/temperature1", format: v => `${round(v)}°C` },
-            { name: "Temperature (Bath 3)", value: "24°C", icon: "🌡️", topic: "factory/floor-0/factory/equipments/painter/temperature2", format: v => `${round(v)}°C` },
-        )
-
-        const equipmentPresses = [0, 1, 2, 3, 4].map(i => {
-            const suffix = i === 0 ? '' : `.00${i}`
-            
-            return this.buildPress({
-                id: `equipment:press-${i}`,
-                area: areaFactory,
-                name: `Press 0${i + 1}`,
-                nodeName: `Press${suffix}`,
-                greenLightOffNodeName: `Green light Off${suffix}`,
-                greenLightOnNodeName: `Green light On${suffix}`,
-                redLightOffNodeName: `Red light Off${suffix}`,
-                redLightOnNodeName: `Red light On${suffix}`,
-                animationPressUpName: `Press up${suffix}`,
-                animationPressDownName: `Press Down${suffix}`,
-                topicPrefix: `factory/floor-0/factory/equipments/press${i}`,
-            })
-        })
-
-        // Stats shown in each area's detail card, driven live from the Coreflux
-        // broker. `topic` matches what tools/factory.py publishes; `format` maps
-        // the raw sensor value to the displayed string.
-        const round = (v: unknown) => Math.round(Number(v))
-        const oneDp = (v: unknown) => Number(v).toFixed(1)
-        const airQuality = (v: unknown) => {
-            const pm25 = Number(v)
-            return pm25 < 12 ? "Good" : pm25 < 35 ? "Moderate" : "Poor"
-        }
-
-        areaFactory.stats.push(
-            { name: "Temperature", value: "24°C", icon: "🌡️", topic: "factory/floor-0/factory/temperature", format: v => `${round(v)}°C` },
-            { name: "Power", value: "12 kW", icon: "⚡", topic: "factory/floor-0/factory/power", format: v => `${oneDp(v)} kW` },
-            { name: "Output", value: "320/h", icon: "📦", topic: "factory/floor-0/factory/output", format: v => `${round(v)}/h` },
-        )
-        areaWarehouse1.stats.push(
-            { name: "Capacity", value: "78%", icon: "📦", topic: "factory/floor-0/warehouse-1/capacity", format: v => `${round(v)}%` },
-            { name: "Humidity", value: "45%", icon: "💧", topic: "factory/floor-0/warehouse-1/humidity", format: v => `${round(v)}%` },
-        )
-        areaLab1.stats.push(
-            { name: "Temperature", value: "21°C", icon: "🌡️", topic: "factory/floor-0/lab-1/temperature", format: v => `${round(v)}°C` },
-            { name: "Air Quality", value: "Good", icon: "🧪", topic: "factory/floor-0/lab-1/air_quality_pm25", format: airQuality },
-        )
+        const areaPainting = floor.addArea('area:painting', 'Painting', this.findMesh('Area 1 - Painting'), new Color3(0.96, 0.55, 0.19));
+        const areaFactory1 = floor.addArea('area:factory-1', 'Factory 1', this.findMesh('Area 2 - Factory 1'), new Color3(0.23, 0.51, 0.96));
+        const areaFactory2 = floor.addArea('area:factory-2', 'Factory 2', this.findMesh('Area 3 - Factory 2'), new Color3(0.34, 0.40, 0.95));
+        const areaFactory3 = floor.addArea('area:factory-3', 'Factory 3', this.findMesh('Area 4 - Factory 3'), new Color3(0.55, 0.36, 0.96));
+        const areaFactory4 = floor.addArea('area:factory-4', 'Factory 4', this.findMesh('Area 5 - Factory 4'), new Color3(0.06, 0.65, 0.91));
+        const areaFactory5 = floor.addArea('area:factory-5', 'Factory 5', this.findMesh('Area 6 - Factory 5'), new Color3(0.02, 0.71, 0.83));
+        const areaFacilities = floor.addArea('area:facilities', 'Facilities', this.findMesh('Area 7 - Facilities'), new Color3(0.13, 0.70, 0.47));
 
         /*
-     
+        PHP 1250 — compression molding press, `Press 1` in the Factory 5 hall.
+        */
+
+        const press = this.buildPress(areaFactory5)
+
+        /*
+        Pintura Clássica — the hanger conveyor through the pre-treatment baths,
+        the drying tunnel and the two paint booths, all in the Painting hall.
+        */
+
+        const line = this.buildPaintingLine(areaPainting)
+        const bath1 = this.buildBath(areaPainting, 1, "Degrease", true)
+        const bath2 = this.buildBath(areaPainting, 2, "Rinse", false)
+        const bath3 = this.buildBath(areaPainting, 3, "Conversion", false)
+
+        const dryer = areaPainting.addEquipment(
+            "equipment:dryer",
+            "Drying Tunnel",
+            this.findNode("Drying Tunel"),
+        )
+        this.bindMachineStatus(dryer, `${PINTURA}/status`)
+        dryer.stats.push({
+            name: "Temperature",
+            value: NO_VALUE,
+            icon: "🔥",
+            topic: `${PINTURA_PLC}/Dryer_Temperature`,
+            format: (v) => `${num(v, 1)} °C`,
+        })
+
+        const booth1 = this.buildBooth(areaPainting, 1)
+        const booth2 = this.buildBooth(areaPainting, 2)
+
+        /*
+        Area stats. Neither energy meter is modelled, so each machine's readings
+        sit on the area it stands in; the paint room's climate has nowhere better
+        to live either.
+        */
+
+        this.addEnergyStats(areaFactory5, PHP_ENERGY)
+        areaFactory5.stats.push({
+            name: "Parts",
+            value: NO_VALUE,
+            icon: "🔢",
+            topic: `${PHP_A}/Part_Counter`,
+            format: (v) => `${round(v)}`,
+        })
+
+        this.addEnergyStats(areaPainting, PINTURA_ENERGY)
+        this.addBandedStat(areaPainting, {
+            name: "Room Temperature",
+            icon: "🌡️",
+            topic: `${PINTURA_PLC}/Paint_Room_Temperature`,
+            unit: "°C",
+        })
+        this.addBandedStat(areaPainting, {
+            name: "Room Humidity",
+            icon: "💧",
+            topic: `${PINTURA_PLC}/Paint_Room_Humidity`,
+            unit: "%",
+        })
+
+        /*
+
         */
 
         world.entityGroups.push(new EntityGroup(world, 'Areas', [
-            areaEntrance,
-            areaWarehouse1,
-            areaWarehouse2,
-            areaFactory,
-            areaLab1,
-            areaLab2,
-            areaLab3,
-            areaDressingRoom,
-            areaPantry,
-            areaWc1,
-            areaWc2,
-            areaOffice1,
-            areaOffice2,
-            areaOffice3,
-            areaOffice4
+            areaPainting,
+            areaFactory1,
+            areaFactory2,
+            areaFactory3,
+            areaFactory4,
+            areaFactory5,
+            areaFacilities,
         ]))
 
-        world.entityGroups.push(new EntityGroup(world, 'Factory', [
-            ...equipmentPresses,
-            equipmentPaintingMachine
+        world.entityGroups.push(new EntityGroup(world, 'Molding', [
+            press,
         ]))
 
-        /*
-        Movable parts flow between predefined waypoints. Each waypoint below is a
-        placement slot in an area; the part starts at the warehouse and hops to
-        others as `factory/parts/<id>/location` messages arrive.
-        */
-
-        const waypoints = [
-            this.addWaypointAtCenter(areaWarehouse1, 'waypoint:warehouse-1', 'Warehouse 1'),
-            this.addWaypointAtCenter(areaFactory, 'waypoint:factory', 'Factory'),
-            this.addWaypointAtCenter(areaWarehouse2, 'waypoint:warehouse-2', 'Warehouse 2'),
-            this.addWaypointAtCenter(areaEntrance, 'waypoint:entrance', 'Entrance'),
-        ]
-
-        const partA = this.spawnPart(world, 'part-a', 'Part A', waypoints[0]!)
-
-        world.entityGroups.push(new EntityGroup(world, 'Parts', [
-            partA,
+        world.entityGroups.push(new EntityGroup(world, 'Painting', [
+            line,
+            bath1,
+            bath2,
+            bath3,
+            dryer,
+            booth1,
+            booth2,
         ]))
 
         return building

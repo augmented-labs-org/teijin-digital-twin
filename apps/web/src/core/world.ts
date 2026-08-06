@@ -162,16 +162,16 @@ export class World {
     }
 
     async load() {
-        const groundMat = new GridMaterial("groundMaterial", this.scene);
+        /* const groundMat = new GridMaterial("groundMaterial", this.scene);
         groundMat.mainColor = Color3.White()
         groundMat.lineColor = Color3.Black()
 
         const ground = MeshBuilder.CreateGround('ground', { width: 80, height: 80 }, this.scene)
 
-        ground.material = groundMat
+        ground.material = groundMat */
 
         try {
-            const buildingModel = await ImportMeshAsync("/models/factory.glb", this.scene)
+            const buildingModel = await ImportMeshAsync("/models/teijin.glb", this.scene)
 
             const materialSet = new Set(buildingModel.meshes.flatMap(m => m.material).filter(m => !!m))
             for (const material of materialSet) {
