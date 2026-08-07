@@ -1,5 +1,6 @@
 import { useSelection } from "@/core/selection/use-selection";
 import { useWorld } from "@/hooks/use-world";
+import { EntityDetailSheet } from "@/components/world/entity-detail-sheet";
 import { TimelineOverlay } from "@/components/world/timeline-overlay";
 import { LayerSlider } from "@workspace/ui/components/layer-slider";
 import { Toggle, } from "@workspace/ui/components/toggle";
@@ -114,5 +115,6 @@ export function WorldOverlay() {
         </div>}
 
         {world && <TimelineOverlay />}
+        {world && <EntityDetailSheet />}
     </>
 }

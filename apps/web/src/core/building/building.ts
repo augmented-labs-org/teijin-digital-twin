@@ -1,6 +1,5 @@
-import { AbstractMesh, Color3, Node } from "@babylonjs/core"
+import { AbstractMesh, Node } from "@babylonjs/core"
 import { World } from "../world"
-import { Area } from "./area"
 
 /*
 
@@ -11,19 +10,12 @@ export class Floor {
     readonly floor: number
     readonly name: string
     readonly node: Node
-    readonly areas: Area[] = []
 
     constructor(building: Building, floor: number, name: string, node: Node) {
         this.building = building
         this.floor = floor
         this.name = name
         this.node = node
-    }
-
-    addArea(id: string, name: string, node: AbstractMesh, color?: Color3): Area {
-        const area = new Area(id, this, name, node, color ?? Color3.Red())
-        this.areas.push(area)
-        return area
     }
 }
 

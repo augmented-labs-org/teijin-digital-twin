@@ -1,10 +1,12 @@
 import { Observer, Scene, TransformNode } from "@babylonjs/core";
-import { AdvancedDynamicTexture, TextBlock } from "@babylonjs/gui";
-import type { Building, Floor } from "./building";
+import { AdvancedDynamicTexture } from "@babylonjs/gui";
 import type { World } from "../world";
+import type { Building } from "./building";
 import { EntityTag } from "./tag";
-import type { EntityStateSnapshot } from "../telemetry/timeline";
-import type { StatIcon } from "../utils/icons";
+import { type UiSchema } from "./ui-schema";
+
+export interface EntityState {
+}
 
 export interface EntityFeature {
     attach(scene: Scene): void
@@ -12,89 +14,28 @@ export interface EntityFeature {
     detach(): void
 }
 
-export type EntityStatus = {
-    status: string,
-    color?: string
-}
-
-/**
- * A single named metric shown in an entity's detail card. The {@link icon} is a
- * Lucide glyph rendered inline before the name; {@link value} is stringified
- * live each frame, so mutating it updates the card.
- */
-export type EntityStat = {
-    /** Short label shown next to the icon. */
-    name: string
-    /** Displayed value; read every frame, so it can change over time. */
-    value: string | number
-    /** Icon drawn before the name (e.g. "thermometer"). */
-    icon: StatIcon
-    /**
-     * Section this stat is grouped under in the detail card (e.g. "Environment",
-     * "Power", "Production"). Stats sharing a group are shown together under one
-     * heading; the heading is omitted when an entity has only one group.
-     */
-    group?: string
-    /**
-     * MQTT topic whose published value drives this stat live. When set, the
-     * telemetry service subscribes to it and writes each message into
-     * {@link value} (via {@link format}).
-     */
-    topic?: string
-    /** Maps a raw published value to the string/number shown in {@link value}. */
-    format?: (raw: unknown) => string | number
-}
-
-/**
- * The surface an {@link Entity} uses to build its detail-card rows, handed to
- * {@link Entity.buildDetailBody}. It hides the tag's control plumbing: entities
- * just ask for rows and fill them in.
- */
-export interface TagBody {
-    /** A muted, left-aligned info row appended to the card. */
-    infoRow(): TextBlock
-    /** A red, wrapping row for error text (hidden by default). */
-    errorRow(): TextBlock
-}
-
 /**
  * A tagged, selectable thing in the world (an area, a piece of equipment, ...).
- *
- * Every entity is anchored to a scene {@link node} and, once {@link attach}ed,
- * gets a screen-space {@link EntityTag} plus any {@link features} it declares.
- * Subclasses supply the tag configuration ({@link idPrefix}, {@link linkOffsetY},
- * {@link pickPriority}), the current {@link status}, and the variable rows of the
- * detail card via {@link buildDetailBody}.
  */
-export abstract class Entity<N extends TransformNode = TransformNode> {
-    /**
-     * Stable, unique identity used to key this entity's structured state on the
-     * timeline. Provided at construction (never derived from location), so it stays
-     * fixed even for movable entities that change which building/floor they are on,
-     * and maps cleanly onto a future database row.
-     */
+export abstract class Entity<N extends TransformNode = TransformNode, S extends EntityState = EntityState> {
     readonly id: string
 
-    /** Text shown on the label pill and the detail-card title. */
     readonly name: string
 
-    /** The scene node this entity is anchored to and picked through. */
     readonly node: N
 
     /** The world this entity belongs to. */
     readonly world: World
 
-    /** Declares if the entity is focused, i.e., is being focused on the user-interface */
-    private _focused = false
-
     /** Extra visuals rendered while the entity is active. */
     readonly features: EntityFeature[] = []
 
-    /** Named metrics shown in the detail card, each with an icon glyph. */
-    readonly stats: EntityStat[] = []
+    //
 
-    /** Namespaces tag control names so entities of different kinds never collide. */
-    abstract readonly idPrefix: string
+    /** Declares if the entity is focused, i.e., is being focused on the user-interface */
+    private _focused = false
+
+    private _state: S
 
     /** Pixels the tag floats above the node's anchor point. */
     abstract readonly linkOffsetY: number
@@ -103,13 +44,15 @@ export abstract class Entity<N extends TransformNode = TransformNode> {
     abstract readonly pickPriority: number
 
     private _tag?: EntityTag
+
     private _observer: Observer<Scene> | null = null
 
-    constructor(id: string, name: string, node: N, world: World) {
+    constructor(id: string, name: string, node: N, world: World, defaultState: S) {
         this.id = id
         this.name = name
         this.node = node
         this.world = world
+        this._state = defaultState
     }
 
     get active() {
@@ -122,22 +65,12 @@ export abstract class Entity<N extends TransformNode = TransformNode> {
      */
     abstract get building(): Building | undefined
 
-    /**
-     * Project a structured state snapshot onto this entity. Entities are pure
-     * projections of timeline state — this is the single write path, used for both
-     * live data and scrubbed history. The base handles the generic {@link stats};
-     * subclasses override to apply their own fields (calling `super.applyState`).
-     */
-    applyState(state: EntityStateSnapshot) {
-        if (!state.stats) {
-            return
-        }
-        for (const stat of this.stats) {
-            const value = state.stats[stat.name]
-            if (value !== undefined) {
-                stat.value = value
-            }
-        }
+    get state() {
+        return this._state
+    }
+
+    set state(val: S) {
+        this._state = val
     }
 
     set focused(val: boolean) {
@@ -152,15 +85,11 @@ export abstract class Entity<N extends TransformNode = TransformNode> {
 
     */
 
-    /** Current headline state driving the tag's accent color and status line. */
-    abstract get status(): EntityStatus
+    abstract buildUiSchema(): UiSchema;
 
-    /**
-     * Append the entity-specific rows to the detail card via `body`. Return a
-     * callback that refreshes those rows; it is invoked every frame with the
-     * current accent color.
-     */
-    abstract buildDetailBody(body: TagBody): (color: string) => void
+    /*
+
+    */
 
     /** Create the tag and features, and start driving the features per frame. */
     attach(gui: AdvancedDynamicTexture, scene: Scene) {
@@ -183,24 +112,5 @@ export abstract class Entity<N extends TransformNode = TransformNode> {
         for (const feature of this.features) {
             feature.detach()
         }
-    }
-}
-
-/**
- * An {@link Entity} with a fixed place in the building hierarchy: it lives on one
- * {@link Floor} for its whole life. Areas and equipment are static. (Movable
- * entities extend {@link Entity} directly and track their location as state.)
- */
-export abstract class StaticEntity<N extends TransformNode = TransformNode> extends Entity<N> {
-    /** The floor that this entity is on. */
-    readonly floor: Floor
-
-    constructor(id: string, name: string, node: N, floor: Floor) {
-        super(id, name, node, floor.building.world)
-        this.floor = floor
-    }
-
-    get building(): Building {
-        return this.floor.building
     }
 }

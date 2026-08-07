@@ -1,27 +1,12 @@
-import { Observable } from "@babylonjs/core"
+import { deepMerge, Observable } from "@babylonjs/core";
+import type { EntityState } from "../building/entity";
 
 /**
- * A serializable pointer to where a movable entity currently is. Kept as plain
- * strings (never object refs) so it survives a timeline/database round-trip; the
- * world resolves it back to a concrete {@link Waypoint} when projecting.
+ * The structured state of the whole scene, keyed by {@link Entity.id}. A
+ * heterogeneous runtime map — each entity's concrete state kind lives only in
+ * its own {@link Entity} subclass, not here.
  */
-export type LocationRef = | { waypoint: string }
-
-export type EntityStateSnapshot = {
-    /** Displayed value per stat, keyed by {@link EntityStat.name}. */
-    stats?: Record<string, string | number>
-
-    online?: boolean
-    running?: boolean
-    errored?: boolean
-    errorReason?: string
-
-    /** Current placement of a movable entity; ignored by static entities. */
-    location?: LocationRef
-}
-
-/** The structured state of the whole scene, keyed by {@link Entity.id}. */
-export type SceneSnapshot = Record<string, EntityStateSnapshot>
+export type SceneSnapshot = Record<string, EntityState>
 
 type TimeRange = { start: number; end: number }
 
@@ -40,23 +25,27 @@ export interface TimelineSource {
 
     /** The most recent structured state per entity. */
     latest(): SceneSnapshot
-    
+
+    /** Every recorded sample for one entity, oldest first (for history graphs). */
+    history(key: string): Sample[]
+
     /** Fires whenever new state is recorded (i.e. the range or latest state changes). */
     readonly onChanged: Observable<TimelineSource>
 }
 
-type Sample = { t: number; state: EntityStateSnapshot }
+export type Sample = { t: number; state: EntityState }
 
 /** Keep memory bounded until a database backs the history. */
 const MAX_SAMPLES_PER_ENTITY = 5000
 
-/** Shallow-merge a partial snapshot onto a base, merging the `stats` map. */
-function mergeState(base: EntityStateSnapshot, partial: EntityStateSnapshot): EntityStateSnapshot {
-    return {
-        ...base,
-        ...partial,
-        stats: partial.stats || base.stats ? { ...base.stats, ...partial.stats } : undefined,
-    }
+/**
+ * Shallow-merge a partial snapshot onto a base. Also deep-merges the `stats`
+ * map when present, so a partial update to one stat doesn't drop the others —
+ * duck-typed via {@link StatValues}, since the base {@link EntityState} stays
+ * empty and only some entity kinds opt into a `stats` bag.
+ */
+function mergeState(base: EntityState, partial: Partial<EntityState>): EntityState {
+    return deepMerge(base, partial)
 }
 
 /**
@@ -69,7 +58,7 @@ export class InMemoryTimelineSource implements TimelineSource {
     readonly onChanged = new Observable<TimelineSource>()
 
     private readonly samplesByKey = new Map<string, Sample[]>()
-    private readonly latestByKey = new Map<string, EntityStateSnapshot>()
+    private readonly latestByKey = new Map<string, EntityState>()
     private _start?: number
     private _end?: number
 
@@ -80,7 +69,7 @@ export class InMemoryTimelineSource implements TimelineSource {
     }
 
     /** Fold a partial update onto the entity's running state and record it at `t`. */
-    record(key: string, partial: EntityStateSnapshot, t: number) {
+    record(key: string, partial: Partial<EntityState>, t: number) {
         const merged = mergeState(this.latestByKey.get(key) ?? {}, partial)
         this.latestByKey.set(key, merged)
 
@@ -117,6 +106,10 @@ export class InMemoryTimelineSource implements TimelineSource {
             snapshot[key] = state
         }
         return snapshot
+    }
+
+    history(key: string): Sample[] {
+        return [...(this.samplesByKey.get(key) ?? [])]
     }
 }
 
@@ -181,6 +174,11 @@ export class Timeline {
     currentState(): SceneSnapshot {
         const t = this.currentTime
         return t === undefined ? {} : this.source.stateAt(t)
+    }
+
+    /** Every recorded sample for one entity, oldest first (for history graphs). */
+    history(key: string): Sample[] {
+        return this.source.history(key)
     }
 
     /** Pin the scene to a past instant. Jumps snap, so scrubbing shows no in-progress animations. */

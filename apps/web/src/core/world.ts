@@ -1,15 +1,12 @@
-import { ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DirectionalLight, GlowLayer, HemisphericLight, ImportMeshAsync, KeyboardEventTypes, Mesh, MeshBuilder, Observable, Observer, PBRMaterial, PointerEventTypes, SelectionOutlineLayer, ShadowGenerator, Vector3, type KeyboardInfo, type Scene } from "@babylonjs/core";
+import { ImplBuilder } from "@/impl";
+import { ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DirectionalLight, GlowLayer, HemisphericLight, ImportMeshAsync, KeyboardEventTypes, Observable, Observer, PBRMaterial, PointerEventTypes, SelectionOutlineLayer, ShadowGenerator, Vector3, type KeyboardInfo, type Scene } from "@babylonjs/core";
 import { AdvancedDynamicTexture } from "@babylonjs/gui";
-import { GridMaterial } from "@babylonjs/materials";
 import { Building } from "./building/building";
-import { Entity } from "./building/entity";
-import { MovableEntity } from "./building/movable";
-import type { Waypoint } from "./building/waypoint";
+import { Entity, type EntityState } from "./building/entity";
 import { installPriorityPicking } from "./building/pick-priority";
 import { MapCamera } from "./camera/map-camera";
 import { MqttTelemetry } from "./telemetry/mqtt";
-import { InMemoryTimelineSource, Timeline, type EntityStateSnapshot, type LocationRef, type SceneSnapshot, type TimelineChange } from "./telemetry/timeline";
-import { ImplBuilder } from "@/impl";
+import { InMemoryTimelineSource, Timeline, type SceneSnapshot, type TimelineChange } from "./telemetry/timeline";
 
 export class EntityGroup {
     readonly world: World
@@ -62,6 +59,11 @@ export class World {
 
     public readonly onFocusEntityChanged = new Observable<Entity | undefined>()
 
+    /** Whether the focused entity's detail panel (opened from its tag) is open. */
+    private _detailPanelOpen = false
+
+    public readonly onDetailPanelChanged = new Observable<boolean>()
+
     public readonly onEntityGroupActiveChanged = new Observable<EntityGroup>()
 
     /*
@@ -86,16 +88,10 @@ export class World {
 
     //
 
-    /** Every attached entity (areas + equipment + movables); each owns its tag and features. */
+    /** Every attached entity (areas + custom machine entities); each owns its tag and features. */
     private readonly _entities: Entity[] = []
 
-    /** Movable entities, owned flat by the world rather than by a floor. */
-    public readonly movables: MovableEntity[] = []
-
-    /** Every waypoint in the world, indexed by its id for location resolution. */
-    private readonly _waypointsById = new Map<string, Waypoint>()
-
-    /** Live sensor feed from the Coreflux broker, wired to topic-bound stats. */
+    /** Live sensor feed from the Coreflux broker; entities wire their own topic bindings against it. */
     public readonly mqtt = new MqttTelemetry()
 
     /** In-memory history of structured entity state; swappable for a DB source later. */
@@ -190,37 +186,15 @@ export class World {
 
             this.buildings.push(building)
 
-            // Index every waypoint so movable locations can be resolved by id.
-            const areas = building.floors.flatMap(f => f.areas)
-            for (const waypoint of areas.flatMap(a => a.waypoints)) {
-                this._waypointsById.set(waypoint.id, waypoint)
-            }
-
-            // Attach every area, its equipment, and the movables. Each entity builds
-            // its own tag and render features (an area's zone fade, ...) and
-            // self-manages them. Movables are projected through the same snapshot
-            // path as everything else, so they must be in `_entities` too.
-            for (const entity of [...areas, ...areas.flatMap(a => a.equipments), ...this.movables]) {
+            // Every entity (areas + custom machine entities) is collected into
+            // `entityGroups` by `impl.build` above. Attach each one: it builds its
+            // own tag and render features (an area's zone fade, ...) and
+            // self-manages them, and wires its own mqtt topic bindings during
+            // `impl.build` — there is no generic topic-subscription pass here.
+            const entities = new Set(this.entityGroups.flatMap(g => g.entities))
+            for (const entity of entities) {
                 entity.attach(this.gui, this.scene)
                 this._entities.push(entity)
-            }
-
-            // Subscribe every topic-bound stat to the Coreflux broker. Messages are
-            // recorded as structured state on the timeline (keyed by the owning
-            // entity), never written to the entity directly — the projection below
-            // is the single write path into the scene.
-            for (const entity of this._entities) {
-                for (const stat of entity.stats) {
-                    if (!stat.topic) {
-                        continue
-                    }
-
-                    this.mqtt.register(stat.topic, (data) => {
-                        const raw = data && typeof data === "object" && "value" in data ? data.value : data
-                        const value = stat.format ? stat.format(raw) : String(raw)
-                        this.recordState(entity.id, { stats: { [stat.name]: value } })
-                    })
-                }
             }
 
             // Project the timeline's current state onto the entities whenever it
@@ -230,15 +204,6 @@ export class World {
             this._timelineObserver = this.timeline.onChanged.add((change) => {
                 this.applySnapshot(this.timeline.currentState(), change.animate)
             })
-
-            // Seed each movable onto its authored starting waypoint. Recorded like
-            // any other state so the movable is placed via the same projection path
-            // (and is present on the timeline from the first instant).
-            for (const movable of this.movables) {
-                if (movable.initialWaypoint) {
-                    this.recordState(movable.id, { location: { waypoint: movable.initialWaypoint.id } })
-                }
-            }
 
             this.mqtt.connect()
         } catch (err) {
@@ -313,26 +278,20 @@ export class World {
      * Record a structured, interpreted state update for an entity onto the
      * timeline. This is the only place live broker data enters the history; a
      * future database-backed source would populate history elsewhere and this
-     * would go away.
+     * would go away. `S` is inferred from the partial passed at the call site —
+     * callers don't need to name their entity's state type explicitly. Every
+     * concrete state's fields are optional by convention, so a partial update
+     * is itself a valid `S`; no `Partial<S>` wrapper is needed (and one would
+     * defeat generic inference from an object literal argument).
      */
-    recordState(key: string, partial: EntityStateSnapshot) {
+    recordState<S extends EntityState = EntityState>(key: string, partial: S) {
         this._timelineSource.record(key, partial, Date.now())
-    }
-
-    /** Register a movable entity so the world attaches, projects, and tracks it. */
-    registerMovable(movable: MovableEntity) {
-        this.movables.push(movable)
-    }
-
-    /** Resolve a serializable {@link LocationRef} to a concrete waypoint (or none). */
-    resolveLocation(ref: LocationRef): Waypoint | undefined {
-        return this._waypointsById.get(ref.waypoint)
     }
 
     /**
      * Whether the state change currently being projected should play transition
      * animations (real-time live update) or snap to the final pose (a seek or
-     * go-live jump). Read by entities' view side-effects during {@link applyState}.
+     * go-live jump). Read by entities' view side-effects when {@link Entity.state} is set.
      */
     get projectionAnimates() {
         return this._projectionAnimates
@@ -348,7 +307,7 @@ export class World {
         for (const entity of this._entities) {
             const state = snapshot[entity.id]
             if (state) {
-                entity.applyState(state)
+                entity.state = state
             }
         }
         // Default back to animating for any state change outside a projection.
@@ -360,11 +319,6 @@ export class World {
         building.activeFloor = floor
         for (let i = 0; i < building.floors.length; i++) {
             building.floors[i]!.node.setEnabled(i <= floor)
-        }
-        // Movables aren't children of the floor nodes, so refresh their visibility
-        // against the new active floor explicitly.
-        for (const movable of this.movables) {
-            movable.updateVisibility()
         }
     }
 
@@ -417,11 +371,33 @@ export class World {
             this._focusedEntity.focused = true
         }
 
+        // The detail panel only ever shows the focused entity; changing (or
+        // clearing) focus invalidates whatever it was showing.
+        if (this._detailPanelOpen) {
+            this._detailPanelOpen = false
+            this.onDetailPanelChanged.notifyObservers(false)
+        }
+
         this.onFocusEntityChanged.notifyObservers(next)
 
         if (this._focusedEntity) {
             this.moveCameraToFocusedEntity()
         }
+    }
+
+    get detailPanelOpen() {
+        return this._detailPanelOpen
+    }
+
+    /** Opening only takes effect while an entity is focused; the panel shows it. */
+    set detailPanelOpen(open: boolean) {
+        const next = open && !!this._focusedEntity
+        if (next === this._detailPanelOpen) {
+            return
+        }
+
+        this._detailPanelOpen = next
+        this.onDetailPanelChanged.notifyObservers(next)
     }
 
     /*

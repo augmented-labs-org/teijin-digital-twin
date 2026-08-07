@@ -9,11 +9,13 @@ import {
     TextBlock,
     Vector2WithInfo,
 } from "@babylonjs/gui"
-import { guiPadding } from "../utils/gui"
-import type { Entity, EntityStat, TagBody } from "./entity"
-import { setPickPriority } from "./pick-priority"
+import panelRightOpenSvg from "lucide-static/icons/panel-right-open.svg?raw"
 import { getLocalBoundingBox } from "../utils/bounds"
+import { guiPadding } from "../utils/gui"
 import { statIconDataUri } from "../utils/icons"
+import { type Entity } from "./entity"
+import { setPickPriority } from "./pick-priority"
+import { BADGE_TONE_COLOR, UiSchema, UiStatValue, type EntityBadge } from "./ui-schema"
 
 const CARD_BACKGROUND = "#ffffff"
 const TEXT_PRIMARY = "#111827"
@@ -41,6 +43,11 @@ const STAT_TILE_ALPHA = 0.07
 /** Vertical gap between a group heading and its tile grid. */
 const STAT_GROUP_HEADING_GAP = 6
 
+/** Gap between badge pills. */
+const BADGE_GAP = 6
+/** Badge pill height. */
+const BADGE_HEIGHT = 20
+
 /** `#rrggbb` → `rgba(r, g, b, alpha)`, used to tint stat tiles by the entity's accent color. */
 function hexToRgba(hex: string, alpha: number): string {
     const value = hex.replace("#", "")
@@ -52,6 +59,18 @@ function hexToRgba(hex: string, alpha: number): string {
 
 /** Higher = snappier fade/scale transitions. */
 const ANIM_SPEED = 14
+
+const detailButtonIconCache = new Map<string, string>()
+
+/** The detail card's "open panel" icon, recolored and cached per accent color. */
+function detailButtonIconUri(color: string): string {
+    let uri = detailButtonIconCache.get(color)
+    if (!uri) {
+        uri = `data:image/svg+xml,${encodeURIComponent(panelRightOpenSvg.replaceAll("currentColor", color))}`
+        detailButtonIconCache.set(color, uri)
+    }
+    return uri
+}
 
 /**
  * Added to an expanded detail card's depth-based zIndex so it paints over every
@@ -74,10 +93,9 @@ const DETAIL_Z_BOOST = 1_000_000
  *    detail card; clicking again collapses it.
  *
  * The tag reads everything it needs off the entity — {@link Entity.name},
- * {@link Entity.active}, {@link Entity.status}, the pick priority / link offset /
- * id prefix, and the variable rows via {@link Entity.buildDetailBody} — and
- * drives its own per-frame update via a scene observer, so callers only need to
- * construct it and {@link dispose} it.
+ * {@link Entity.active}, {@link Entity.buildUiSchema}, and the pick priority /
+ * link offset / id prefix — and drives its own per-frame update via a scene
+ * observer, so callers only need to construct it and {@link dispose} it.
  */
 export class EntityTag {
     private readonly node: TransformNode
@@ -95,8 +113,16 @@ export class EntityTag {
     private _detail!: Rectangle
     private _detailDot!: Ellipse
     private _statusRow!: TextBlock
-    /** Entity-provided callback that refreshes the detail card's variable rows. */
-    private _syncBody: (color: string) => void = () => {}
+    /** Opens the entity's detail panel; icon is recolored to match the accent color each frame. */
+    private _detailButtonIcon!: Image
+    /** Red, wrapping row for {@link EntityRenderModel.error} (hidden when absent). */
+    private _errorRow!: TextBlock
+    /** Horizontal row of badge pills, rebuilt by {@link _rebuildBadges} when the badge set changes. */
+    private _badgesPanel!: StackPanel
+    /** Tiles in {@link _badgesPanel}, paired with the badge they render. Rebuilt on change, refreshed every frame. */
+    private _badgeTiles: { tile: Rectangle; label: TextBlock; badge: EntityBadge }[] = []
+    /** Fingerprint of the badge set last built into {@link _badgesPanel}. */
+    private _badgesKey = ""
     /** Hairline separating the stats grid from the rows above it. */
     private _statsDivider!: Rectangle
     /** Vertical container each group's heading + tile grid is rebuilt into. */
@@ -106,7 +132,7 @@ export class EntityTag {
      * Rebuilt by {@link _rebuildStatGroups} whenever the set of groups/stats
      * changes; refreshed (tint/icon/value) every frame by {@link _syncStats}.
      */
-    private _statTiles: { tile: Rectangle; icon: Image; value: TextBlock; label: TextBlock; stat: EntityStat }[] = []
+    private _statTiles: { tile: Rectangle; icon: Image; value: TextBlock; label: TextBlock; stat: UiStatValue }[] = []
     /** Fingerprint of the grouping last built into {@link _statsPanel}. */
     private _statGroupsKey = ""
 
@@ -137,6 +163,7 @@ export class EntityTag {
         this._detail = detail.root
         this._detailDot = detail.dot
         this._statusRow = detail.statusRow
+        this._detailButtonIcon = detail.buttonIcon
 
         this._makeMeshInteractive()
 
@@ -158,23 +185,11 @@ export class EntityTag {
     }
 
     /*
-    Detail-card helpers (exposed to the entity via a TagBody)
+    Detail-card helpers
     */
 
-    /** A muted, left-aligned info row. */
-    private detailRow(parent: StackPanel): TextBlock {
-        const row = new TextBlock()
-        row.color = TEXT_MUTED
-        row.fontSize = 13
-        row.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
-        row.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
-        row.resizeToFit = true
-        parent.addControl(row)
-        return row
-    }
-
-    /** A red, wrapping row for error text (hidden by default). */
-    private errorRow(parent: StackPanel): TextBlock {
+    /** A red, wrapping row for {@link EntityRenderModel.error} (hidden by default). */
+    private _buildErrorRow(parent: StackPanel): TextBlock {
         const row = new TextBlock()
         row.color = "#ef4444"
         row.fontSize = 13
@@ -183,26 +198,63 @@ export class EntityTag {
         row.width = `${CARD_CONTENT_WIDTH}px`
         row.textWrapping = true
         row.resizeToFit = true
+        row.isVisible = false
         parent.addControl(row)
         return row
     }
 
-    /** Group a stat list by {@link EntityStat.group}, preserving first-seen order of both groups and stats within each. */
-    private _groupStats(stats: EntityStat[]): { group: string | undefined; stats: EntityStat[] }[] {
-        const groups: { group: string | undefined; stats: EntityStat[] }[] = []
-        const byGroup = new Map<string | undefined, EntityStat[]>()
+    /** Build one empty badge pill. Its tint/text are filled in by {@link _syncBadges}. */
+    private _buildBadgePill(): { tile: Rectangle; label: TextBlock } {
+        const tile = new Rectangle()
+        tile.adaptWidthToChildren = true
+        tile.heightInPixels = BADGE_HEIGHT
+        tile.cornerRadius = BADGE_HEIGHT / 2
+        tile.thickness = 0
 
-        for (const stat of stats) {
-            let bucket = byGroup.get(stat.group)
-            if (!bucket) {
-                bucket = []
-                byGroup.set(stat.group, bucket)
-                groups.push({ group: stat.group, stats: bucket })
-            }
-            bucket.push(stat)
+        const label = new TextBlock()
+        label.fontSize = 11
+        label.fontWeight = "700"
+        label.resizeToFit = true
+        guiPadding(label, 0, 8)
+
+        tile.addControl(label)
+        return { tile, label }
+    }
+
+    /**
+     * Rebuild the badge pills from scratch into {@link _badgesPanel}. Badge
+     * labels/tones only change alongside the underlying state, so this is
+     * cheap to skip via {@link _badgesKey} on the common case of no change.
+     */
+    private _rebuildBadges(badges: EntityBadge[]) {
+        for (const child of this._badgesPanel.children.slice()) {
+            child.dispose()
+        }
+        this._badgeTiles = []
+
+        for (const badge of badges) {
+            const { tile, label } = this._buildBadgePill()
+            this._badgesPanel.addControl(tile)
+            this._badgeTiles.push({ tile, label, badge })
+        }
+    }
+
+    /** Reconcile the badge row against `badges`, rebuilding only if the set changed. */
+    private _syncBadges(badges: EntityBadge[]) {
+        const key = badges.map(b => `${b.label}|${b.tone ?? ""}`).join(",")
+        if (key !== this._badgesKey) {
+            this._badgesKey = key
+            this._rebuildBadges(badges)
         }
 
-        return groups
+        for (const { tile, label, badge } of this._badgeTiles) {
+            const color = BADGE_TONE_COLOR[badge.tone ?? "neutral"]
+            tile.background = hexToRgba(color, STAT_TILE_ALPHA)
+            label.color = color
+            label.text = badge.label
+        }
+
+        this._badgesPanel.isVisible = badges.length > 0
     }
 
     /** A small caption naming a group of stats (e.g. "POWER"). */
@@ -289,16 +341,15 @@ export class EntityTag {
      * only {@link EntityStat.value} changes after that — so this only actually
      * runs once per entity, the first time {@link _syncStats} sees its stats.
      */
-    private _rebuildStatGroups() {
+    private _rebuildStatGroups(statGroups: UiSchema["statGroups"]) {
         for (const child of this._statsPanel.children.slice()) {
             child.dispose()
         }
         this._statTiles = []
 
-        const groups = this._groupStats(this.entity.stats)
-        const showHeadings = groups.length > 1
+        const showHeadings = statGroups.length > 1
 
-        for (const { group, stats } of groups) {
+        for (const { group, stats } of statGroups) {
             const section = new StackPanel()
             section.isVertical = true
             section.width = "100%"
@@ -323,30 +374,36 @@ export class EntityTag {
     }
 
     /**
-     * Reconcile the stat grid against {@link Entity.stats}: rebuild the
-     * group/tile structure if the set of groups/stats changed, then refresh
-     * every tile's background tint and icon/value/label. Cheap when nothing
-     * changed — setters no-op on unchanged values.
+     * Reconcile the stat grid against `statGroups`: rebuild the group/tile
+     * structure if the set of groups/stats changed, then refresh every tile's
+     * background tint and icon/value/label against the freshly built stats —
+     * `buildUiSchema` returns new stat objects every frame, so tiles are
+     * re-paired with `statGroups` here by position rather than read off the
+     * (otherwise stale, only rebuilt on a name/group change) `stat` captured
+     * at the last rebuild. Cheap when nothing changed — setters no-op on
+     * unchanged values.
      */
-    private _syncStats(color: string) {
-        const stats = this.entity.stats
-
-        const key = stats.map((stat) => `${stat.group ?? ""} ${stat.name}`).join("")
+    private _syncStats(statGroups: UiSchema["statGroups"], color: string) {
+        const key = statGroups.flatMap(g => g.stats.map(s => `${g.group} ${s.name}`)).join("")
         if (key !== this._statGroupsKey) {
             this._statGroupsKey = key
-            this._rebuildStatGroups()
+            this._rebuildStatGroups(statGroups)
         }
 
+        const freshStats = statGroups.flatMap(g => g.stats)
         const tint = hexToRgba(color, STAT_TILE_ALPHA)
-        for (const { tile, icon, value, label, stat } of this._statTiles) {
-            tile.background = tint
-            icon.source = statIconDataUri(stat.icon, color)
-            value.text = `${stat.value}`
-            label.text = stat.name
-        }
+        this._statTiles.forEach((tile, index) => {
+            const stat = freshStats[index] ?? tile.stat
+            tile.stat = stat
+            tile.tile.background = tint
+            tile.icon.source = statIconDataUri(stat.icon, color)
+            tile.value.text = stat.value
+            tile.label.text = stat.name
+        })
 
-        this._statsPanel.isVisible = stats.length > 0
-        this._statsDivider.isVisible = stats.length > 0
+        const hasStats = statGroups.some((g) => g.stats.length > 0)
+        this._statsPanel.isVisible = hasStats
+        this._statsDivider.isVisible = hasStats
     }
 
     /*
@@ -354,7 +411,7 @@ export class EntityTag {
     */
 
     private _buildIcon(): Ellipse {
-        const icon = new Ellipse(`${this.entity.idPrefix}-${this.entity.name}-tag-icon`)
+        const icon = new Ellipse(`${this.entity.id}-tag-icon`)
         icon.width = "16px"
         icon.height = "16px"
         icon.thickness = 2
@@ -367,7 +424,7 @@ export class EntityTag {
     }
 
     private _buildLabel(): Rectangle {
-        const root = new Rectangle(`${this.entity.idPrefix}-${this.entity.name}-tag-label`)
+        const root = new Rectangle(`${this.entity.id}-tag-label`)
         root.adaptWidthToChildren = true
         root.cornerRadius = 13
         root.thickness = 2
@@ -392,8 +449,8 @@ export class EntityTag {
         return root
     }
 
-    private _buildDetail(): { root: Rectangle; dot: Ellipse; statusRow: TextBlock } {
-        const root = new Rectangle(`${this.entity.idPrefix}-${this.entity.name}-tag-detail`)
+    private _buildDetail(): { root: Rectangle; dot: Ellipse; statusRow: TextBlock; buttonIcon: Image } {
+        const root = new Rectangle(`${this.entity.id}-tag-detail`)
         root.width = `${CARD_WIDTH}px`
         root.adaptHeightToChildren = true
         root.cornerRadius = 14
@@ -433,15 +490,28 @@ export class EntityTag {
         title.resizeToFit = true
         titleRow.addControl(title)
 
-        // Shared status line, then entity-specific rows.
-        const statusRow = this.detailRow(panel)
+        // Shared status line.
+        const statusRow = new TextBlock()
+        statusRow.color = TEXT_MUTED
+        statusRow.fontSize = 13
+        statusRow.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        statusRow.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        statusRow.resizeToFit = true
         guiPadding(statusRow, 0, 0, 0, 0)
-        
-        const body: TagBody = {
-            infoRow: () => this.detailRow(panel),
-            errorRow: () => this.errorRow(panel),
-        }
-        this._syncBody = this.entity.buildDetailBody(body)
+        panel.addControl(statusRow)
+
+        // Badge pills (e.g. "Running"/"Idle"), from the render model.
+        const badgesPanel = new StackPanel()
+        badgesPanel.isVertical = false
+        badgesPanel.spacing = BADGE_GAP
+        badgesPanel.adaptHeightToChildren = true
+        badgesPanel.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        badgesPanel.isVisible = false
+        panel.addControl(badgesPanel)
+        this._badgesPanel = badgesPanel
+
+        // Error banner, from the render model.
+        this._errorRow = this._buildErrorRow(panel)
 
         // Hairline separating the stats list below from the rows above; shown
         // alongside the stats panel by `_syncStats`.
@@ -455,8 +525,8 @@ export class EntityTag {
         panel.addControl(statsDivider)
         this._statsDivider = statsDivider
 
-        // Generic per-entity stats, reconciled against `entity.stats` each frame
-        // into this container as a grid of tiles (created lazily by `_syncStats`).
+        // Generic per-entity stats, reconciled against the render model each
+        // frame into this container as a grid of tiles (created lazily by `_syncStats`).
         const statsPanel = new StackPanel()
         statsPanel.isVertical = true
         statsPanel.width = "100%"
@@ -465,9 +535,43 @@ export class EntityTag {
         panel.addControl(statsPanel)
         this._statsPanel = statsPanel
 
+        const buttonIcon = this._buildDetailButton(root)
+
         this._makeInteractive(root)
         this._attach(root)
-        return { root, dot, statusRow }
+        return { root, dot, statusRow, buttonIcon }
+    }
+
+    /**
+     * A small icon button pinned to the detail card's top-right corner that opens
+     * the entity's full detail panel. Its own {@link Control.isPointerBlocker}
+     * stops the click from also bubbling up to the card's collapse handler.
+     */
+    private _buildDetailButton(root: Rectangle): Image {
+        const button = new Rectangle()
+        button.width = "22px"
+        button.height = "22px"
+        button.cornerRadius = 6
+        button.thickness = 0
+        button.background = "transparent"
+        button.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT
+        button.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP
+        button.topInPixels = CARD_PADDING_Y - 4
+        button.leftInPixels = -(CARD_PADDING_X - 4)
+        button.isPointerBlocker = true
+        button.hoverCursor = "pointer"
+
+        const icon = new Image()
+        icon.width = "14px"
+        icon.height = "14px"
+        button.addControl(icon)
+
+        button.onPointerClickObservable.add(() => {
+            this.entity.world.detailPanelOpen = true
+        })
+
+        root.addControl(button)
+        return icon
     }
 
     private _makeInteractive(control: Control) {
@@ -585,19 +689,27 @@ export class EntityTag {
 
     /** Push live state into the controls (cheap; setters no-op on unchanged values). */
     private _syncContent() {
-        const status = this.entity.status
-        const color = status.color ?? "#374151"
+        const schema = this.entity.buildUiSchema()
+        const color = schema.color
 
         this._icon.color = color
         this._label.color = color
         this._detail.color = color
         this._detailDot.background = color
 
-        this._statusRow.text = `Status: ${status.status}`
+        this._statusRow.text = `Status: ${schema.status}`
         this._statusRow.color = color
 
-        this._syncBody(color)
-        this._syncStats(color)
+        this._detailButtonIcon.source = detailButtonIconUri(color)
+
+        this._syncBadges(schema.badges)
+
+        this._errorRow.isVisible = !!schema.error
+        if (schema.error) {
+            this._errorRow.text = schema.error
+        }
+
+        this._syncStats(schema.statGroups, color)
     }
 
     private _fade(control: Control, target: number, dt: number) {
