@@ -7,7 +7,10 @@ import { MapCameraPointersInput } from './map-camera-input'
 
 const DEFAULT_ALPHA = -Math.PI / 2 - 0.5
 const DEFAULT_BETA = 0.8
-const DEFAULT_RADIUS = 100
+export const DEFAULT_RADIUS = 100
+
+/** Fraction of `upperRadiusLimit` past which the scene is considered "zoomed out a lot". */
+export const MAP_MODE_RADIUS_RATIO = 0.9
 
 // MapCamera replicates google maps camera style
 export class MapCamera extends ArcRotateCamera {

@@ -4,7 +4,7 @@ import { AdvancedDynamicTexture } from "@babylonjs/gui";
 import { Building } from "./building/building";
 import { Entity, type EntityState } from "./building/entity";
 import { installPriorityPicking } from "./building/pick-priority";
-import { MapCamera } from "./camera/map-camera";
+import { DEFAULT_RADIUS, MAP_MODE_RADIUS_RATIO, MapCamera } from "./camera/map-camera";
 import { MqttTelemetry } from "./telemetry/mqtt";
 import { InMemoryTimelineSource, Timeline, type SceneSnapshot, type TimelineChange } from "./telemetry/timeline";
 
@@ -60,6 +60,11 @@ export class World {
     public readonly onFocusEntityChanged = new Observable<Entity | undefined>()
 
     public readonly onEntityGroupActiveChanged = new Observable<EntityGroup>()
+
+    /** Whether the camera is zoomed out far enough that the world map should take over. */
+    private _mapMode = false
+
+    public readonly onMapModeChanged = new Observable<boolean>()
 
     /*
 
@@ -267,6 +272,7 @@ export class World {
         this.gui.dispose()
         this.outlineLayer.dispose()
         this.onFocusBuildingChanged.clear()
+        this.onMapModeChanged.clear()
     }
 
     /**
@@ -373,6 +379,33 @@ export class World {
         }
     }
 
+    get mapMode() {
+        return this._mapMode
+    }
+
+    set mapMode(next: boolean) {
+        if (next === this._mapMode) {
+            return
+        }
+
+        this._mapMode = next
+        this.onMapModeChanged.notifyObservers(next)
+    }
+
+    /**
+     * Leave the world map and fly the camera back to the default scene view.
+     * Called when a factory marker is clicked or the map is zoomed in a lot.
+     */
+    exitMapMode() {
+        this.mapMode = false
+
+        const camera = this.scene.activeCamera
+        if (camera instanceof ArcRotateCamera) {
+            camera.target = Vector3.Zero()
+            camera.radius = DEFAULT_RADIUS
+        }
+    }
+
     /*
 
     */
@@ -473,6 +506,16 @@ export class World {
     */
 
     private _afterCameraRender = (camera: Camera) => {
+        // Zooming out past most of the camera's range hands off to the world map.
+        // Only auto-enters map mode; leaving it is an explicit user action
+        // (marker click or zooming in a lot on the map) via `exitMapMode`.
+        if (!this.mapMode && camera instanceof ArcRotateCamera) {
+            const upperRadiusLimit = camera.upperRadiusLimit ?? Infinity
+            if (camera.radius >= upperRadiusLimit * MAP_MODE_RADIUS_RATIO) {
+                this.mapMode = true
+            }
+        }
+
         let maximumCoverage = -1;
         let maximumBuilding: Building | undefined = undefined
 
