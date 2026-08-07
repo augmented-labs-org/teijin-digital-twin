@@ -4,6 +4,7 @@ import type { Building, Floor } from "./building";
 import type { World } from "../world";
 import { EntityTag } from "./tag";
 import type { EntityStateSnapshot } from "../telemetry/timeline";
+import type { StatIcon } from "../utils/icons";
 
 export interface EntityFeature {
     attach(scene: Scene): void
@@ -18,16 +19,22 @@ export type EntityStatus = {
 
 /**
  * A single named metric shown in an entity's detail card. The {@link icon} is a
- * glyph (e.g. an emoji) rendered inline before the name; {@link value} is
- * stringified live each frame, so mutating it updates the card.
+ * Lucide glyph rendered inline before the name; {@link value} is stringified
+ * live each frame, so mutating it updates the card.
  */
 export type EntityStat = {
     /** Short label shown next to the icon. */
     name: string
     /** Displayed value; read every frame, so it can change over time. */
     value: string | number
-    /** Icon glyph drawn before the name (e.g. "🌡️"). */
-    icon: string
+    /** Icon drawn before the name (e.g. "thermometer"). */
+    icon: StatIcon
+    /**
+     * Section this stat is grouped under in the detail card (e.g. "Environment",
+     * "Power", "Production"). Stats sharing a group are shown together under one
+     * heading; the heading is omitted when an entity has only one group.
+     */
+    group?: string
     /**
      * MQTT topic whose published value drives this stat live. When set, the
      * telemetry service subscribes to it and writes each message into

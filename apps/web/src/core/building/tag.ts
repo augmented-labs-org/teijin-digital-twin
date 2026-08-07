@@ -3,19 +3,52 @@ import {
     AdvancedDynamicTexture,
     Control,
     Ellipse,
+    Image,
     Rectangle,
     StackPanel,
     TextBlock,
     Vector2WithInfo,
 } from "@babylonjs/gui"
 import { guiPadding } from "../utils/gui"
-import type { Entity, TagBody } from "./entity"
+import type { Entity, EntityStat, TagBody } from "./entity"
 import { setPickPriority } from "./pick-priority"
 import { getLocalBoundingBox } from "../utils/bounds"
+import { statIconDataUri } from "../utils/icons"
 
 const CARD_BACKGROUND = "#ffffff"
 const TEXT_PRIMARY = "#111827"
 const TEXT_MUTED = "#6b7280"
+const DIVIDER = "#e5e7eb"
+
+/** Detail card width. */
+const CARD_WIDTH = 280
+/** Detail card horizontal/vertical padding. */
+const CARD_PADDING_X = 12
+const CARD_PADDING_Y = 12
+/** Width available to the card's content, inside its padding. */
+const CARD_CONTENT_WIDTH = CARD_WIDTH - CARD_PADDING_X * 2
+
+/** Tiles per grid row in the detail card's stats section. */
+const STAT_COLUMNS = 2
+/** Gap between stat tiles, both across a row and between rows. */
+const STAT_GAP = 8
+/** Width of a stat tile: fits {@link STAT_COLUMNS} of them across the card's content width. */
+const STAT_TILE_WIDTH = (CARD_CONTENT_WIDTH - STAT_GAP * (STAT_COLUMNS - 1)) / STAT_COLUMNS
+/** Padding inside a stat tile. */
+const STAT_TILE_PADDING = 8
+/** Opacity of a stat tile's background tint, drawn from the entity's accent color. */
+const STAT_TILE_ALPHA = 0.07
+/** Vertical gap between a group heading and its tile grid. */
+const STAT_GROUP_HEADING_GAP = 6
+
+/** `#rrggbb` → `rgba(r, g, b, alpha)`, used to tint stat tiles by the entity's accent color. */
+function hexToRgba(hex: string, alpha: number): string {
+    const value = hex.replace("#", "")
+    const r = parseInt(value.substring(0, 2), 16)
+    const g = parseInt(value.substring(2, 4), 16)
+    const b = parseInt(value.substring(4, 6), 16)
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
 
 /** Higher = snappier fade/scale transitions. */
 const ANIM_SPEED = 14
@@ -64,10 +97,18 @@ export class EntityTag {
     private _statusRow!: TextBlock
     /** Entity-provided callback that refreshes the detail card's variable rows. */
     private _syncBody: (color: string) => void = () => {}
-    /** Container the stat rows are reconciled into. */
+    /** Hairline separating the stats grid from the rows above it. */
+    private _statsDivider!: Rectangle
+    /** Vertical container each group's heading + tile grid is rebuilt into. */
     private _statsPanel!: StackPanel
-    /** Live stat rows, reconciled against {@link Entity.stats} each frame. */
-    private _statRows: { row: Rectangle; icon: TextBlock; name: TextBlock; value: TextBlock }[] = []
+    /**
+     * Flattened tiles across every group, paired with the stat they render.
+     * Rebuilt by {@link _rebuildStatGroups} whenever the set of groups/stats
+     * changes; refreshed (tint/icon/value) every frame by {@link _syncStats}.
+     */
+    private _statTiles: { tile: Rectangle; icon: Image; value: TextBlock; label: TextBlock; stat: EntityStat }[] = []
+    /** Fingerprint of the grouping last built into {@link _statsPanel}. */
+    private _statGroupsKey = ""
 
     private _renderObserver: Observer<Scene> | null = null
 
@@ -124,7 +165,7 @@ export class EntityTag {
     private detailRow(parent: StackPanel): TextBlock {
         const row = new TextBlock()
         row.color = TEXT_MUTED
-        row.fontSize = 12
+        row.fontSize = 13
         row.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
         row.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
         row.resizeToFit = true
@@ -136,82 +177,176 @@ export class EntityTag {
     private errorRow(parent: StackPanel): TextBlock {
         const row = new TextBlock()
         row.color = "#ef4444"
-        row.fontSize = 12
+        row.fontSize = 13
         row.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
         row.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
-        row.width = "182px"
+        row.width = `${CARD_CONTENT_WIDTH}px`
         row.textWrapping = true
         row.resizeToFit = true
         parent.addControl(row)
         return row
     }
 
-    /**
-     * Build one empty stat row and append it to {@link _statsPanel}. Its contents
-     * (icon/name/value text) are filled in by {@link _syncStats}.
-     */
-    private _buildStatRow(): { row: Rectangle; icon: TextBlock; name: TextBlock; value: TextBlock } {
-        const row = new Rectangle()
-        row.width = "182px"
-        row.height = "18px"
-        row.thickness = 0
+    /** Group a stat list by {@link EntityStat.group}, preserving first-seen order of both groups and stats within each. */
+    private _groupStats(stats: EntityStat[]): { group: string | undefined; stats: EntityStat[] }[] {
+        const groups: { group: string | undefined; stats: EntityStat[] }[] = []
+        const byGroup = new Map<string | undefined, EntityStat[]>()
+
+        for (const stat of stats) {
+            let bucket = byGroup.get(stat.group)
+            if (!bucket) {
+                bucket = []
+                byGroup.set(stat.group, bucket)
+                groups.push({ group: stat.group, stats: bucket })
+            }
+            bucket.push(stat)
+        }
+
+        return groups
+    }
+
+    /** A small caption naming a group of stats (e.g. "POWER"). */
+    private _buildGroupHeading(parent: StackPanel, name: string) {
+        const heading = new TextBlock()
+        heading.text = name.toUpperCase()
+        heading.color = TEXT_MUTED
+        heading.fontSize = 11
+        heading.fontWeight = "700"
+        heading.resizeToFit = true
+        heading.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        heading.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        parent.addControl(heading)
+    }
+
+    /** Build one empty grid row, sized to hold up to {@link STAT_COLUMNS} tiles. */
+    private _buildStatGridRow(): StackPanel {
+        const row = new StackPanel()
+        row.isVertical = false
+        row.width = `${CARD_CONTENT_WIDTH}px`
+        row.spacing = STAT_GAP
+        row.adaptHeightToChildren = true
         row.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
-
-        const icon = new TextBlock()
-        icon.color = TEXT_PRIMARY
-        icon.fontSize = 13
-        icon.resizeToFit = true
-        icon.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
-        icon.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
-        row.addControl(icon)
-
-        const name = new TextBlock()
-        name.color = TEXT_MUTED
-        name.fontSize = 12
-        name.resizeToFit = true
-        name.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
-        name.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
-        guiPadding(name, 0, 0, 0, 22)
-        row.addControl(name)
-
-        const value = new TextBlock()
-        value.color = TEXT_PRIMARY
-        value.fontSize = 12
-        value.fontWeight = "600"
-        value.width = "100%"
-        value.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT
-        value.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT
-        value.paddingRightInPixels = 5
-        row.addControl(value)
-
-        this._statsPanel.addControl(row)
-        return { row, icon, name, value }
+        return row
     }
 
     /**
-     * Reconcile the stat rows against {@link Entity.stats}: grow or shrink the row
-     * pool to match, then refresh each row's icon/name/value. Cheap when nothing
-     * changed — text setters no-op on unchanged values.
+     * Build one empty stat tile. Its contents (background tint, icon/value/label
+     * text) are filled in by {@link _syncStats}; the caller places it in a grid row.
      */
-    private _syncStats() {
+    private _buildStatTile(): { tile: Rectangle; icon: Image; value: TextBlock; label: TextBlock } {
+        const tile = new Rectangle()
+        tile.width = `${STAT_TILE_WIDTH}px`
+        tile.adaptHeightToChildren = true
+        tile.cornerRadius = 8
+        tile.thickness = 0
+
+        const content = new StackPanel()
+        content.isVertical = true
+        content.width = "100%"
+        content.spacing = 2
+        guiPadding(content, STAT_TILE_PADDING)
+        tile.addControl(content)
+
+        const icon = new Image()
+        icon.width = "18px"
+        icon.height = "18px"
+        icon.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        content.addControl(icon)
+
+        const spacer = new Rectangle()
+        spacer.width = "100%"
+        spacer.heightInPixels = 2
+        spacer.thickness = 0
+        content.addControl(spacer)
+
+        const value = new TextBlock()
+        value.color = TEXT_PRIMARY
+        value.fontSize = 15
+        value.fontWeight = "700"
+        value.width = `${STAT_TILE_WIDTH - STAT_TILE_PADDING * 2}px`
+        value.textWrapping = true
+        value.resizeToFit = true
+        value.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        value.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        content.addControl(value)
+
+        const label = new TextBlock()
+        label.color = TEXT_MUTED
+        label.fontSize = 12
+        label.width = `${STAT_TILE_WIDTH - STAT_TILE_PADDING * 2}px`
+        label.textWrapping = true
+        label.resizeToFit = true
+        label.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        label.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        content.addControl(label)
+
+        return { tile, icon, value, label }
+    }
+
+    /**
+     * Rebuild every group section (heading + tile grid) from scratch into
+     * {@link _statsPanel}. Stat names/groups are fixed at entity construction —
+     * only {@link EntityStat.value} changes after that — so this only actually
+     * runs once per entity, the first time {@link _syncStats} sees its stats.
+     */
+    private _rebuildStatGroups() {
+        for (const child of this._statsPanel.children.slice()) {
+            child.dispose()
+        }
+        this._statTiles = []
+
+        const groups = this._groupStats(this.entity.stats)
+        const showHeadings = groups.length > 1
+
+        for (const { group, stats } of groups) {
+            const section = new StackPanel()
+            section.isVertical = true
+            section.width = "100%"
+            section.spacing = STAT_GROUP_HEADING_GAP
+            this._statsPanel.addControl(section)
+
+            if (showHeadings && group) {
+                this._buildGroupHeading(section, group)
+            }
+
+            let row: StackPanel | undefined
+            stats.forEach((stat, index) => {
+                if (index % STAT_COLUMNS === 0) {
+                    row = this._buildStatGridRow()
+                    section.addControl(row)
+                }
+                const tile = this._buildStatTile()
+                row!.addControl(tile.tile)
+                this._statTiles.push({ ...tile, stat })
+            })
+        }
+    }
+
+    /**
+     * Reconcile the stat grid against {@link Entity.stats}: rebuild the
+     * group/tile structure if the set of groups/stats changed, then refresh
+     * every tile's background tint and icon/value/label. Cheap when nothing
+     * changed — setters no-op on unchanged values.
+     */
+    private _syncStats(color: string) {
         const stats = this.entity.stats
 
-        while (this._statRows.length > stats.length) {
-            this._statRows.pop()!.row.dispose()
-        }
-        while (this._statRows.length < stats.length) {
-            this._statRows.push(this._buildStatRow())
+        const key = stats.map((stat) => `${stat.group ?? ""} ${stat.name}`).join("")
+        if (key !== this._statGroupsKey) {
+            this._statGroupsKey = key
+            this._rebuildStatGroups()
         }
 
-        for (let i = 0; i < stats.length; i++) {
-            const stat = stats[i]!
-            const { icon, name, value } = this._statRows[i]!
-            icon.text = stat.icon
-            name.text = stat.name
+        const tint = hexToRgba(color, STAT_TILE_ALPHA)
+        for (const { tile, icon, value, label, stat } of this._statTiles) {
+            tile.background = tint
+            icon.source = statIconDataUri(stat.icon, color)
             value.text = `${stat.value}`
+            label.text = stat.name
         }
 
         this._statsPanel.isVisible = stats.length > 0
+        this._statsDivider.isVisible = stats.length > 0
     }
 
     /*
@@ -259,9 +394,9 @@ export class EntityTag {
 
     private _buildDetail(): { root: Rectangle; dot: Ellipse; statusRow: TextBlock } {
         const root = new Rectangle(`${this.entity.idPrefix}-${this.entity.name}-tag-detail`)
-        root.width = "210px"
+        root.width = `${CARD_WIDTH}px`
         root.adaptHeightToChildren = true
-        root.cornerRadius = 12
+        root.cornerRadius = 14
         root.thickness = 2
         root.background = CARD_BACKGROUND
         root.shadowColor = "rgba(0,0,0,0.3)"
@@ -272,35 +407,35 @@ export class EntityTag {
         const panel = new StackPanel()
         panel.isVertical = true
         panel.width = "100%"
-        panel.spacing = 5
-        guiPadding(panel, 12, 14)
+        panel.spacing = 10
+        guiPadding(panel, CARD_PADDING_Y, CARD_PADDING_X)
         root.addControl(panel)
 
         // Title row: status dot + name.
         const titleRow = new StackPanel()
         titleRow.isVertical = false
-        titleRow.spacing = 7
-        titleRow.height = "20px"
+        titleRow.spacing = 8
+        titleRow.height = "24px"
         titleRow.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
         panel.addControl(titleRow)
 
         const dot = new Ellipse()
-        dot.width = "9px"
-        dot.height = "9px"
+        dot.width = "10px"
+        dot.height = "10px"
         dot.thickness = 0
         titleRow.addControl(dot)
 
         const title = new TextBlock()
         title.text = this.entity.name
         title.color = TEXT_PRIMARY
-        title.fontSize = 15
+        title.fontSize = 17
         title.fontWeight = "700"
         title.resizeToFit = true
         titleRow.addControl(title)
 
         // Shared status line, then entity-specific rows.
         const statusRow = this.detailRow(panel)
-        guiPadding(statusRow, 0, 0, 4, 0)
+        guiPadding(statusRow, 0, 0, 0, 0)
         
         const body: TagBody = {
             infoRow: () => this.detailRow(panel),
@@ -308,12 +443,24 @@ export class EntityTag {
         }
         this._syncBody = this.entity.buildDetailBody(body)
 
+        // Hairline separating the stats list below from the rows above; shown
+        // alongside the stats panel by `_syncStats`.
+        const statsDivider = new Rectangle()
+        statsDivider.heightInPixels = 1
+        statsDivider.width = "100%"
+        statsDivider.thickness = 0
+        statsDivider.background = DIVIDER
+        statsDivider.isVisible = false
+
+        panel.addControl(statsDivider)
+        this._statsDivider = statsDivider
+
         // Generic per-entity stats, reconciled against `entity.stats` each frame
-        // into this container (rows are created lazily by `_syncStats`).
+        // into this container as a grid of tiles (created lazily by `_syncStats`).
         const statsPanel = new StackPanel()
         statsPanel.isVertical = true
         statsPanel.width = "100%"
-        statsPanel.spacing = 5
+        statsPanel.spacing = STAT_GAP
         statsPanel.isVisible = false
         panel.addControl(statsPanel)
         this._statsPanel = statsPanel
@@ -450,7 +597,7 @@ export class EntityTag {
         this._statusRow.color = color
 
         this._syncBody(color)
-        this._syncStats()
+        this._syncStats(color)
     }
 
     private _fade(control: Control, target: number, dt: number) {

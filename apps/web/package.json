@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "lucide-static": "^1.28.0",
     "motion": "^12.42.2",
     "mqtt": "^5.10.1",
     "react": "^19.2.7",
@@ -26,10 +27,10 @@
     "@types/node": "^24.13.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "lucide-react": "^1.24.0",
     "@vitejs/plugin-react": "^6.0.3",
     "@workspace/typescript-config": "workspace:*",
     "@workspace/ui": "workspace:*",
+    "lucide-react": "^1.24.0",
     "oxlint": "^1.71.0",
     "typescript": "~6.0.2",
     "vite": "^8.1.1"

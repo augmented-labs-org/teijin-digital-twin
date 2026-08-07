@@ -3,6 +3,7 @@ import { Area } from "./core/building/area"
 import { Building } from "./core/building/building"
 import { Entity, EntityStat } from "./core/building/entity"
 import { EntityGroup, World } from "./core/world"
+import type { StatIcon } from "./core/utils/icons"
 
 /*
 Teijin Leça — the site simulated by `tools/teijin.py`.
@@ -187,7 +188,8 @@ export class ImplBuilder {
         entity: Entity,
         spec: {
             name: string
-            icon: string
+            icon: StatIcon
+            group: string
             topics: Record<string, string>
             render: (values: Record<string, unknown>) => string
         },
@@ -195,7 +197,7 @@ export class ImplBuilder {
         const world = entity.world
         const values: Record<string, unknown> = {}
 
-        const stat: EntityStat = { name: spec.name, icon: spec.icon, value: NO_VALUE }
+        const stat: EntityStat = { name: spec.name, icon: spec.icon, group: spec.group, value: NO_VALUE }
         entity.stats.push(stat)
 
         const [primary] = Object.keys(spec.topics)
@@ -211,30 +213,18 @@ export class ImplBuilder {
         }
     }
 
-    /**
-     * A reading published alongside the `_Min`/`_Max` limits configured for it.
-     * The limits are folded into the reading instead of taking two rows of their
-     * own: `58.2 °C (52–64)`.
-     */
-    private addBandedStat(
+    /** A simple single-topic reading, e.g. 🌡️ Temperature 23.4 °C. */
+    private addGaugeStat(
         entity: Entity,
-        spec: { name: string; icon: string; topic: string; unit: string; digits?: number },
+        spec: { name: string; icon: StatIcon; group: string; topic: string; unit: string; digits?: number },
     ) {
-        this.addCompositeStat(entity, {
+        entity.stats.push({
             name: spec.name,
+            value: NO_VALUE,
             icon: spec.icon,
-            topics: {
-                value: spec.topic,
-                min: `${spec.topic}_Min`,
-                max: `${spec.topic}_Max`,
-            },
-            render: (v) => {
-                const reading = `${num(v.value, spec.digits ?? 1)} ${spec.unit}`
-                if (v.min === undefined || v.max === undefined) {
-                    return reading
-                }
-                return `${reading} (${trim(v.min)}–${trim(v.max)})`
-            },
+            group: spec.group,
+            topic: spec.topic,
+            format: (v) => `${num(v, spec.digits ?? 1)} ${spec.unit}`,
         })
     }
 
@@ -246,7 +236,8 @@ export class ImplBuilder {
         entity: Entity,
         spec: {
             name: string
-            icon: string
+            icon: StatIcon
+            group: string
             topic: string
             setpointTopic: string
             unit: string
@@ -256,6 +247,7 @@ export class ImplBuilder {
         this.addCompositeStat(entity, {
             name: spec.name,
             icon: spec.icon,
+            group: spec.group,
             topics: { value: spec.topic, setpoint: spec.setpointTopic },
             render: (v) => {
                 const reading = `${num(v.value, spec.digits ?? 1)} ${spec.unit}`
@@ -265,64 +257,19 @@ export class ImplBuilder {
     }
 
     /**
-     * One Shelly 3EM measurement across all three phases, on a single row as
-     * `A · B · C` — three rows per meter instead of eighteen.
-     */
-    private addPhaseStat(
-        entity: Entity,
-        spec: {
-            name: string
-            icon: string
-            base: string
-            signal: string
-            unit: string
-            digits?: number
-        },
-    ) {
-        const digits = spec.digits ?? 1
-
-        this.addCompositeStat(entity, {
-            name: spec.name,
-            icon: spec.icon,
-            topics: {
-                a: `${spec.base}/Phase_A_${spec.signal}`,
-                b: `${spec.base}/Phase_B_${spec.signal}`,
-                c: `${spec.base}/Phase_C_${spec.signal}`,
-            },
-            render: (v) =>
-                `${num(v.a, digits)} · ${num(v.b, digits)} · ${num(v.c, digits)} ${spec.unit}`.trim(),
-        })
-    }
-
-    /**
-     * The 20 signals of a Shelly 3EM: the two totals, then each per-phase
-     * measurement as an `A · B · C` triple. The meters aren't in the model, so
-     * these go onto the area whose machine they meter.
+     * Of the Shelly 3EM's 20 signals, only the total active power is of
+     * interest here. The meters aren't in the model, so it goes onto the area
+     * whose machine it meters.
      */
     private addEnergyStats(entity: Entity, base: string) {
-        entity.stats.push(
-            {
-                name: "Total Power",
-                value: NO_VALUE,
-                icon: "⚡",
-                topic: `${base}/Total_Active_Power`,
-                format: (v) => `${num(v, 1)} kW`,
-            },
-            {
-                name: "Total Current",
-                value: NO_VALUE,
-                icon: "🔌",
-                topic: `${base}/Total_Current`,
-                format: (v) => `${num(v, 1)} A`,
-            },
-        )
-
-        this.addPhaseStat(entity, { name: "Power", icon: "⚡", base, signal: "Active_Power", unit: "kW" })
-        this.addPhaseStat(entity, { name: "Current", icon: "🔌", base, signal: "Current", unit: "A", digits: 0 })
-        this.addPhaseStat(entity, { name: "Voltage", icon: "🔋", base, signal: "Voltage", unit: "V", digits: 0 })
-        this.addPhaseStat(entity, { name: "Power Factor", icon: "📐", base, signal: "Power_Factor", unit: "", digits: 2 })
-        this.addPhaseStat(entity, { name: "Apparent", icon: "📊", base, signal: "Apparent_Power", unit: "kVA" })
-        this.addPhaseStat(entity, { name: "Frequency", icon: "〰️", base, signal: "Frequency", unit: "Hz" })
+        entity.stats.push({
+            name: "Total Power",
+            value: NO_VALUE,
+            icon: "zap",
+            group: "Power",
+            topic: `${base}/Total_Active_Power`,
+            format: (v) => `${num(v, 1)} kW`,
+        })
     }
 
     /*
@@ -342,11 +289,12 @@ export class ImplBuilder {
         this.bindMachineStatus(press, `${PHP}/status`)
 
         press.stats.push(
-            { name: "Product", value: NO_VALUE, icon: "🏷️", topic: `${PHP_A}/Product_Description` },
+            { name: "Product", value: NO_VALUE, icon: "tag", group: "Production", topic: `${PHP_A}/Product_Description` },
             {
                 name: "Parts",
                 value: NO_VALUE,
-                icon: "🔢",
+                icon: "hash",
+                group: "Production",
                 topic: `${PHP_A}/Part_Counter`,
                 format: (v) => `${round(v)}`,
             },
@@ -354,7 +302,8 @@ export class ImplBuilder {
 
         this.addSetpointStat(press, {
             name: "Pressure",
-            icon: "💪",
+            icon: "gauge",
+            group: "Production",
             topic: `${PHP_A}/Pressure`,
             setpointTopic: `${PHP_A}/Target_Pressure`,
             unit: "bar",
@@ -364,21 +313,24 @@ export class ImplBuilder {
             {
                 name: "Platen",
                 value: NO_VALUE,
-                icon: "📏",
+                icon: "ruler",
+                group: "Production",
                 topic: `${PHP_A}/Movable_Platen_Position`,
                 format: (v) => `${num(v, 0)} mm`,
             },
             {
                 name: "Platen State",
                 value: NO_VALUE,
-                icon: "⚙️",
+                icon: "settings",
+                group: "Production",
                 topic: `${PHP_A}/Movable_Platen_State`,
                 format: (v) => PLATEN_STATES[round(v)] ?? NO_VALUE,
             },
             {
                 name: "Platen Speed",
                 value: NO_VALUE,
-                icon: "🏃",
+                icon: "move",
+                group: "Production",
                 topic: `${PHP_A}/Speed`,
                 format: (v) => `${num(v, 1)} mm/s`,
             },
@@ -386,7 +338,8 @@ export class ImplBuilder {
 
         this.addSetpointStat(press, {
             name: "Compression",
-            icon: "⏱️",
+            icon: "timer",
+            group: "Production",
             topic: `${PHP_A}/Compression_Time`,
             setpointTopic: `${PHP_A}/Target_Time`,
             unit: "s",
@@ -396,14 +349,16 @@ export class ImplBuilder {
             {
                 name: "Elapsed",
                 value: NO_VALUE,
-                icon: "🔄",
+                icon: "clock",
+                group: "Production",
                 topic: `${PHP_A}/Total_Time`,
                 format: (v) => `${num(v, 1)} s`,
             },
             {
                 name: "Remaining",
                 value: NO_VALUE,
-                icon: "⌛",
+                icon: "hourglass",
+                group: "Production",
                 topic: `${PHP_A}/Remaining_Time`,
                 format: (v) => `${num(v, 1)} s`,
             },
@@ -413,7 +368,8 @@ export class ImplBuilder {
             for (const zone of [1, 2]) {
                 this.addSetpointStat(press, {
                     name: `${platen} Platen ${zone}`,
-                    icon: "🌡️",
+                    icon: "thermometer",
+                    group: "Production",
                     topic: `${PHP_B}/${platen}_Platen_Temperature_${zone}`,
                     setpointTopic: `${PHP_B}/${platen}_Platen_Temperature_${zone}_Setpoint`,
                     unit: "°C",
@@ -425,21 +381,24 @@ export class ImplBuilder {
             {
                 name: "Mold Cavity",
                 value: NO_VALUE,
-                icon: "🌡️",
+                icon: "thermometer",
+                group: "Production",
                 topic: `${PHP_B}/Mold_Cavity_Temperature`,
                 format: (v) => `${num(v, 1)} °C`,
             },
             {
                 name: "Mold Male",
                 value: NO_VALUE,
-                icon: "🌡️",
+                icon: "thermometer",
+                group: "Production",
                 topic: `${PHP_B}/Mold_Male_Temperature`,
                 format: (v) => `${num(v, 1)} °C`,
             },
             {
                 name: "Cycle Time",
                 value: NO_VALUE,
-                icon: "📐",
+                icon: "timer",
+                group: "Production",
                 topic: `${PHP_B}/Theoretical_Cycle_Time`,
                 format: (v) => `${num(v, 0)} s`,
             },
@@ -475,35 +434,40 @@ export class ImplBuilder {
             {
                 name: "Line Speed",
                 value: NO_VALUE,
-                icon: "🏃",
+                icon: "move",
+                group: "Production",
                 topic: `${PINTURA_PLC}/Line_Speed`,
                 format: (v) => `${num(v, 2)} m/min`,
             },
             {
                 name: "Downtime",
                 value: NO_VALUE,
-                icon: "🛑",
+                icon: "ban",
+                group: "Production",
                 topic: `${PINTURA_PLC}/Downtime`,
                 format: yesNo,
             },
             {
                 name: "Alarm 1",
                 value: NO_VALUE,
-                icon: "🚨",
+                icon: "siren",
+                group: "Production",
                 topic: `${PINTURA_PLC}/Alarm_1`,
                 format: alarm,
             },
             {
                 name: "Alarm 2",
                 value: NO_VALUE,
-                icon: "🚨",
+                icon: "siren",
+                group: "Production",
                 topic: `${PINTURA_PLC}/Alarm_2`,
                 format: alarm,
             },
             {
                 name: "Alarm 3",
                 value: NO_VALUE,
-                icon: "🚨",
+                icon: "siren",
+                group: "Production",
                 topic: `${PINTURA_PLC}/Alarm_3`,
                 format: alarm,
             },
@@ -527,15 +491,17 @@ export class ImplBuilder {
 
         this.bindMachineStatus(bath, `${PINTURA}/status`)
 
-        this.addBandedStat(bath, {
+        this.addGaugeStat(bath, {
             name: "Temperature",
-            icon: "🌡️",
+            icon: "thermometer",
+            group: "Environment",
             topic: `${PINTURA_PLC}/Bath_${index}_Temperature`,
             unit: "°C",
         })
-        this.addBandedStat(bath, {
+        this.addGaugeStat(bath, {
             name: "Pressure",
-            icon: "💧",
+            icon: "gauge",
+            group: "Environment",
             topic: `${PINTURA_PLC}/Bath_${index}_Pressure`,
             unit: "bar",
             digits: 2,
@@ -545,7 +511,8 @@ export class ImplBuilder {
             bath.stats.push({
                 name: "pH",
                 value: NO_VALUE,
-                icon: "🧪",
+                icon: "test-tube",
+                group: "Environment",
                 topic: `${PINTURA_PLC}/Bath_${index}_Ph`,
                 format: (v) => num(v, 2),
             })
@@ -567,15 +534,17 @@ export class ImplBuilder {
 
         this.bindMachineStatus(booth, `${PINTURA}/status`)
 
-        this.addBandedStat(booth, {
+        this.addGaugeStat(booth, {
             name: "Temperature",
-            icon: "🌡️",
+            icon: "thermometer",
+            group: "Environment",
             topic: `${PINTURA_PLC}/Cabin_${index}_Temperature`,
             unit: "°C",
         })
-        this.addBandedStat(booth, {
+        this.addGaugeStat(booth, {
             name: "Humidity",
-            icon: "💧",
+            icon: "droplet",
+            group: "Environment",
             topic: `${PINTURA_PLC}/Cabin_${index}_Humidity`,
             unit: "%",
         })
@@ -629,7 +598,8 @@ export class ImplBuilder {
         dryer.stats.push({
             name: "Temperature",
             value: NO_VALUE,
-            icon: "🔥",
+            icon: "flame",
+            group: "Environment",
             topic: `${PINTURA_PLC}/Dryer_Temperature`,
             format: (v) => `${num(v, 1)} °C`,
         })
@@ -647,21 +617,24 @@ export class ImplBuilder {
         areaFactory5.stats.push({
             name: "Parts",
             value: NO_VALUE,
-            icon: "🔢",
+            icon: "hash",
+            group: "Production",
             topic: `${PHP_A}/Part_Counter`,
             format: (v) => `${round(v)}`,
         })
 
         this.addEnergyStats(areaPainting, PINTURA_ENERGY)
-        this.addBandedStat(areaPainting, {
+        this.addGaugeStat(areaPainting, {
             name: "Room Temperature",
-            icon: "🌡️",
+            icon: "thermometer",
+            group: "Environment",
             topic: `${PINTURA_PLC}/Paint_Room_Temperature`,
             unit: "°C",
         })
-        this.addBandedStat(areaPainting, {
+        this.addGaugeStat(areaPainting, {
             name: "Room Humidity",
-            icon: "💧",
+            icon: "droplet",
+            group: "Environment",
             topic: `${PINTURA_PLC}/Paint_Room_Humidity`,
             unit: "%",
         })
