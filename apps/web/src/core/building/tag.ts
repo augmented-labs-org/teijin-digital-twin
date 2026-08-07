@@ -9,7 +9,6 @@ import {
     TextBlock,
     Vector2WithInfo,
 } from "@babylonjs/gui"
-import panelRightOpenSvg from "lucide-static/icons/panel-right-open.svg?raw"
 import { getLocalBoundingBox } from "../utils/bounds"
 import { guiPadding } from "../utils/gui"
 import { statIconDataUri } from "../utils/icons"
@@ -60,18 +59,6 @@ function hexToRgba(hex: string, alpha: number): string {
 /** Higher = snappier fade/scale transitions. */
 const ANIM_SPEED = 14
 
-const detailButtonIconCache = new Map<string, string>()
-
-/** The detail card's "open panel" icon, recolored and cached per accent color. */
-function detailButtonIconUri(color: string): string {
-    let uri = detailButtonIconCache.get(color)
-    if (!uri) {
-        uri = `data:image/svg+xml,${encodeURIComponent(panelRightOpenSvg.replaceAll("currentColor", color))}`
-        detailButtonIconCache.set(color, uri)
-    }
-    return uri
-}
-
 /**
  * Added to an expanded detail card's depth-based zIndex so it paints over every
  * other (unexpanded) tag regardless of distance. Large enough to dwarf any
@@ -113,8 +100,6 @@ export class EntityTag {
     private _detail!: Rectangle
     private _detailDot!: Ellipse
     private _statusRow!: TextBlock
-    /** Opens the entity's detail panel; icon is recolored to match the accent color each frame. */
-    private _detailButtonIcon!: Image
     /** Red, wrapping row for {@link EntityRenderModel.error} (hidden when absent). */
     private _errorRow!: TextBlock
     /** Horizontal row of badge pills, rebuilt by {@link _rebuildBadges} when the badge set changes. */
@@ -163,7 +148,6 @@ export class EntityTag {
         this._detail = detail.root
         this._detailDot = detail.dot
         this._statusRow = detail.statusRow
-        this._detailButtonIcon = detail.buttonIcon
 
         this._makeMeshInteractive()
 
@@ -449,7 +433,7 @@ export class EntityTag {
         return root
     }
 
-    private _buildDetail(): { root: Rectangle; dot: Ellipse; statusRow: TextBlock; buttonIcon: Image } {
+    private _buildDetail(): { root: Rectangle; dot: Ellipse; statusRow: TextBlock } {
         const root = new Rectangle(`${this.entity.id}-tag-detail`)
         root.width = `${CARD_WIDTH}px`
         root.adaptHeightToChildren = true
@@ -535,43 +519,9 @@ export class EntityTag {
         panel.addControl(statsPanel)
         this._statsPanel = statsPanel
 
-        const buttonIcon = this._buildDetailButton(root)
-
         this._makeInteractive(root)
         this._attach(root)
-        return { root, dot, statusRow, buttonIcon }
-    }
-
-    /**
-     * A small icon button pinned to the detail card's top-right corner that opens
-     * the entity's full detail panel. Its own {@link Control.isPointerBlocker}
-     * stops the click from also bubbling up to the card's collapse handler.
-     */
-    private _buildDetailButton(root: Rectangle): Image {
-        const button = new Rectangle()
-        button.width = "22px"
-        button.height = "22px"
-        button.cornerRadius = 6
-        button.thickness = 0
-        button.background = "transparent"
-        button.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT
-        button.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP
-        button.topInPixels = CARD_PADDING_Y - 4
-        button.leftInPixels = -(CARD_PADDING_X - 4)
-        button.isPointerBlocker = true
-        button.hoverCursor = "pointer"
-
-        const icon = new Image()
-        icon.width = "14px"
-        icon.height = "14px"
-        button.addControl(icon)
-
-        button.onPointerClickObservable.add(() => {
-            this.entity.world.detailPanelOpen = true
-        })
-
-        root.addControl(button)
-        return icon
+        return { root, dot, statusRow }
     }
 
     private _makeInteractive(control: Control) {
@@ -699,8 +649,6 @@ export class EntityTag {
 
         this._statusRow.text = `Status: ${schema.status}`
         this._statusRow.color = color
-
-        this._detailButtonIcon.source = detailButtonIconUri(color)
 
         this._syncBadges(schema.badges)
 

@@ -1,6 +1,6 @@
 import { useSelection } from "@/core/selection/use-selection";
 import { useWorld } from "@/hooks/use-world";
-import { EntityDetailSheet } from "@/components/world/entity-detail-sheet";
+import { EntitySidebar } from "@/components/world/entity-sidebar";
 import { TimelineOverlay } from "@/components/world/timeline-overlay";
 import { LayerSlider } from "@workspace/ui/components/layer-slider";
 import { Toggle, } from "@workspace/ui/components/toggle";
@@ -81,7 +81,7 @@ export function WorldOverlay() {
             </AnimatePresence>
         </div>
 
-        <div className="absolute top-0 bottom-0 right-0 pointer-events-none">
+        <div className="absolute top-0 bottom-0 right-14 pointer-events-none">
             <div className="flex flex-col justify-center items-center h-full p-8">
                 <div className="pointer-events-auto h-full max-h-80">
                     <AnimatePresence>
@@ -115,6 +115,6 @@ export function WorldOverlay() {
         </div>}
 
         {world && <TimelineOverlay />}
-        {world && <EntityDetailSheet />}
+        {world && <EntitySidebar />}
     </>
 }

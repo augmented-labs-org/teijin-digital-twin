@@ -59,11 +59,6 @@ export class World {
 
     public readonly onFocusEntityChanged = new Observable<Entity | undefined>()
 
-    /** Whether the focused entity's detail panel (opened from its tag) is open. */
-    private _detailPanelOpen = false
-
-    public readonly onDetailPanelChanged = new Observable<boolean>()
-
     public readonly onEntityGroupActiveChanged = new Observable<EntityGroup>()
 
     /*
@@ -371,33 +366,11 @@ export class World {
             this._focusedEntity.focused = true
         }
 
-        // The detail panel only ever shows the focused entity; changing (or
-        // clearing) focus invalidates whatever it was showing.
-        if (this._detailPanelOpen) {
-            this._detailPanelOpen = false
-            this.onDetailPanelChanged.notifyObservers(false)
-        }
-
         this.onFocusEntityChanged.notifyObservers(next)
 
         if (this._focusedEntity) {
             this.moveCameraToFocusedEntity()
         }
-    }
-
-    get detailPanelOpen() {
-        return this._detailPanelOpen
-    }
-
-    /** Opening only takes effect while an entity is focused; the panel shows it. */
-    set detailPanelOpen(open: boolean) {
-        const next = open && !!this._focusedEntity
-        if (next === this._detailPanelOpen) {
-            return
-        }
-
-        this._detailPanelOpen = next
-        this.onDetailPanelChanged.notifyObservers(next)
     }
 
     /*
@@ -504,9 +477,7 @@ export class World {
         let maximumBuilding: Building | undefined = undefined
 
         for (const building of this.buildings) {
-            const root = building.rootNode
-            const { min, max } = root.getHierarchyBoundingVectors(true)
-            const bSphere = new BoundingSphere(min, max)
+            const bSphere = new BoundingSphere(building.boundsMin, building.boundsMax)
 
             const distanceToCamera = camera.mode === Camera.ORTHOGRAPHIC_CAMERA ? camera.minZ : bSphere.centerWorld.subtract(camera.globalPosition).length();
 

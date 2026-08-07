@@ -1,4 +1,4 @@
-import { AbstractMesh, Node } from "@babylonjs/core"
+import { AbstractMesh, Node, Vector3 } from "@babylonjs/core"
 import { World } from "../world"
 
 /*
@@ -35,10 +35,18 @@ export class Building {
     /// Indicates which floor is currently active in the user-interface. Floors below are also considered active
     activeFloor: number = 0
 
+    public readonly boundsMin: Vector3
+    public readonly boundsMax: Vector3
+
     constructor(world: World, name: string, rootNode: AbstractMesh) {
         this.world = world
         this.name = name
+        
         this.rootNode = rootNode
+        
+        const bounds = this.rootNode.getHierarchyBoundingVectors(true)
+        this.boundsMin = bounds.min
+        this.boundsMax = bounds.max
     }
 
     addFloor(name: string, node: Node): Floor {

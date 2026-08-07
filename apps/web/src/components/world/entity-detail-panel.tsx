@@ -2,14 +2,10 @@ import type { Entity } from "@/core/building/entity"
 import { BADGE_TONE_COLOR, UiStatValue } from "@/core/building/ui-schema"
 import type { Sample } from "@/core/telemetry/timeline"
 import { statIconDataUri } from "@/core/utils/icons"
-import { useEntityDetail } from "@/hooks/use-entity-detail"
 import { useTimeline } from "@/hooks/use-timeline"
 import { useWorld } from "@/hooks/use-world"
-import { Button } from "@workspace/ui/components/button"
 import { Card, CardContent, CardHeader } from "@workspace/ui/components/card"
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@workspace/ui/components/chart"
-import { XIcon } from "lucide-react"
-import { AnimatePresence, motion } from "motion/react"
 import { useEffect, useMemo, useState } from "react"
 import { CartesianGrid, Line, LineChart, ReferenceLine, XAxis, YAxis } from "recharts"
 
@@ -145,12 +141,10 @@ function EntityDetailBody({
     entity,
     history,
     markTime,
-    onClose,
 }: {
     entity: Entity
     history: Sample[]
     markTime?: number
-    onClose: () => void
 }) {
     const schema = entity.buildUiSchema()
     const color = schema.color
@@ -183,16 +177,6 @@ function EntityDetailBody({
                 )}
             </div>
 
-            <Button
-                variant="ghost"
-                size="icon-sm"
-                className="absolute top-4 right-4 bg-secondary"
-                onClick={onClose}
-            >
-                <XIcon />
-                <span className="sr-only">Close</span>
-            </Button>
-
             <div className="flex-1 overflow-y-auto px-6 pb-6">
                 {schema.error && (
                     <p className="mb-4 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{schema.error}</p>
@@ -224,10 +208,9 @@ function EntityDetailBody({
 }
 
 /**
- * The entity detail panel, opened from the button on an {@link EntityTag}'s
- * expanded detail card. Reads `world.focusedEntity`/`detailPanelOpen` via
- * {@link useEntityDetail}. Each stat gets its own chart of whatever history the
- * timeline source has recorded for it (possibly none).
+ * The entity detail panel content, shown by {@link EntitySidebar} for whichever
+ * entity is currently focused in the world. Each stat gets its own chart of
+ * whatever history the timeline source has recorded for it (possibly none).
  *
  * The chart *data* is driven by the raw {@link TimelineSource.onChanged} (new
  * samples arriving), not the higher-level {@link Timeline.onChanged} — that
@@ -236,41 +219,28 @@ function EntityDetailBody({
  * regardless of where that scrubber sits; only the scrub-position marker line
  * (via {@link useTimeline}) reacts to seek/goLive.
  */
-export function EntityDetailSheet() {
-    const { entity, open, close } = useEntityDetail()
+export function EntityDetailPanel({ entity }: { entity: Entity | undefined }) {
     const world = useWorld((s) => s.world)
     const { live, currentTime } = useTimeline()
     const [, forceUpdate] = useState(0)
 
     useEffect(() => {
-        if (!world || !entity || !open) {
+        if (!world || !entity) {
             return
         }
         const observer = world.timeline.source.onChanged.add(() => forceUpdate((n) => n + 1))
         return () => observer.remove()
-    }, [world, entity, open])
+    }, [world, entity])
 
-    const history = world && entity ? world.timeline.history(entity.id) : []
+    if (!entity) {
+        return (
+            <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
+                No entity selected
+            </div>
+        )
+    }
 
-    return (
-        <AnimatePresence>
-            {open && entity && (
-                <motion.div
-                    key={entity.id}
-                    initial={{ x: "100%" }}
-                    animate={{ x: 0 }}
-                    exit={{ x: "100%" }}
-                    transition={{ type: "spring", stiffness: 320, damping: 32 }}
-                    className="fixed inset-y-0 right-0 z-40 flex w-full flex-col border-l bg-popover bg-clip-padding text-sm text-popover-foreground shadow-xl sm:max-w-md"
-                >
-                    <EntityDetailBody
-                        entity={entity}
-                        history={history}
-                        markTime={live ? undefined : currentTime}
-                        onClose={close}
-                    />
-                </motion.div>
-            )}
-        </AnimatePresence>
-    )
+    const history = world ? world.timeline.history(entity.id) : []
+
+    return <EntityDetailBody entity={entity} history={history} markTime={live ? undefined : currentTime} />
 }
