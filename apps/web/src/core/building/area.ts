@@ -21,7 +21,7 @@ class AreaFadeFeature<S extends EntityState> implements EntityFeature {
         const { min } = getLocalBoundingBox(this.area.node)
 
         material.alpha = 0
-        material.setup(min.y, min.y + 0.5, this.area.color)
+        material.setup(min.y, min.y + 0.9, this.area.color)
 
         this.area.node.material = material
         this.material = material
@@ -32,7 +32,7 @@ class AreaFadeFeature<S extends EntityState> implements EntityFeature {
             return
         }
 
-        const targetAlpha = this.area.active ? 0.5 : 0
+        const targetAlpha = this.area.active ? 0.3 : 0
         this.material.alpha = damp(this.material.alpha, targetAlpha, 0.005, dt)
         this.area.node.isVisible = this.material.alpha > 0.001
     }

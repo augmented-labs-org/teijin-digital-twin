@@ -66,7 +66,7 @@ export function WorldMap({ onSelectFactory }: WorldMapProps) {
             easeLinearity: 0.25,
         })
 
-        L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+        L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=cb1_2sld_1_32a9f1447d846b263bf49f37", {
             subdomains: "abcd",
             maxZoom: 19,
         }).addTo(map)

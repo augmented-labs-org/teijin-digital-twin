@@ -31,17 +31,17 @@ export function EntitySidebar() {
                 {activePanel !== null && (
                     <motion.div
                         key="entity-sidebar-panel"
-                        initial={{ x: "100%" }}
+                        initial={{ x: "-100%" }}
                         animate={{ x: 0 }}
-                        exit={{ x: "100%" }}
+                        exit={{ x: "-100%" }}
                         transition={{ type: "spring", stiffness: 320, damping: 32 }}
-                        style={{ right: RAIL_WIDTH }}
-                        className="fixed inset-y-0 z-40 flex w-full flex-col border-l bg-popover bg-clip-padding text-sm text-popover-foreground shadow-xl sm:max-w-md"
+                        style={{ left: RAIL_WIDTH }}
+                        className="fixed inset-y-0 z-40 flex w-full flex-col border-r bg-popover bg-clip-padding text-sm text-popover-foreground shadow-xl sm:max-w-md"
                     >
                         <Button
                             variant="ghost"
                             size="icon-sm"
-                            className="absolute top-4 right-4 bg-secondary"
+                            className="absolute top-4 left-4 bg-secondary"
                             onClick={() => setActivePanel(null)}
                         >
                             <XIcon />
@@ -59,7 +59,7 @@ export function EntitySidebar() {
 
             <div
                 style={{ width: RAIL_WIDTH }}
-                className="fixed inset-y-0 right-0 z-50 flex flex-col items-center gap-2 border-l bg-popover bg-clip-padding py-4"
+                className="fixed inset-y-0 left-0 z-50 flex flex-col items-center gap-2 border-r bg-popover bg-clip-padding py-4"
             >
                 <Button
                     variant="ghost"

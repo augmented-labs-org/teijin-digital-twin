@@ -1,6 +1,6 @@
 import { ImplBuilder } from "@/impl";
-import { ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DirectionalLight, GlowLayer, HemisphericLight, ImportMeshAsync, KeyboardEventTypes, Observable, Observer, PBRMaterial, PointerEventTypes, SelectionOutlineLayer, ShadowGenerator, Vector3, type KeyboardInfo, type Scene } from "@babylonjs/core";
-import { AdvancedDynamicTexture } from "@babylonjs/gui";
+import { ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DefaultRenderingPipeline, DirectionalLight, HemisphericLight, ImageProcessingConfiguration, ImportMeshAsync, KeyboardEventTypes, Observable, Observer, PBRMaterial, PointerEventTypes, Scene, SelectionOutlineLayer, Vector3, type KeyboardInfo } from "@babylonjs/core";
+import { AdvancedDynamicTexture, Control, TextBlock } from "@babylonjs/gui";
 import { Building } from "./building/building";
 import { Entity, type EntityState } from "./building/entity";
 import { installPriorityPicking } from "./building/pick-priority";
@@ -74,6 +74,8 @@ export class World {
 
     private _onKeyboard?: Observer<KeyboardInfo>
 
+    private _onFpsUpdate?: Observer<Scene>
+
     private _cameraFocusObserver: Observer<Scene> | null = null
     private _cameraFocusStartTarget: Vector3 | null = null
     private _cameraFocusStartRadius = 0
@@ -133,16 +135,8 @@ export class World {
         sun.position = new Vector3(80, 140, 60)
         sun.intensity = 0.6
 
-        const shadowGenerator = new ShadowGenerator(2048, sun)
-        shadowGenerator.useBlurExponentialShadowMap = true
-        shadowGenerator.blurKernel = 32
-        shadowGenerator.setDarkness(0.35)
-
-        const gl = new GlowLayer("glow", scene, { 
-            blurKernelSize: 64,
-        });
-
-        gl.intensity = 1.2;
+        scene.imageProcessingConfiguration.toneMappingEnabled = true
+        scene.imageProcessingConfiguration.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES
 
         this.gui = AdvancedDynamicTexture.CreateFullscreenUI("worldUI", true, scene, undefined, true)
         this.initGui()
@@ -167,7 +161,9 @@ export class World {
         ground.material = groundMat */
 
         try {
-            const buildingModel = await ImportMeshAsync("/models/teijin.glb", this.scene)
+            const buildingModel = await ImportMeshAsync("/models/teijin3.glb", this.scene)
+
+            buildingModel.animationGroups.forEach(a => a.stop())
 
             const materialSet = new Set(buildingModel.meshes.flatMap(m => m.material).filter(m => !!m))
             for (const material of materialSet) {
@@ -176,7 +172,6 @@ export class World {
                 }
 
                 material.emissiveIntensity = Math.min(1, (material.emissiveIntensity - 1) / 10)
-                console.log(material.name, material.emissiveIntensity)
             }
 
             const impl = new ImplBuilder(buildingModel)
@@ -243,6 +238,27 @@ export class World {
             }
             this.scene.skipPointerUpPicking = true
         })
+
+        const fpsText = new TextBlock("fpsCounter")
+        fpsText.text = "0 FPS"
+        fpsText.color = "white"
+        fpsText.outlineColor = "black"
+        fpsText.outlineWidth = 3
+        fpsText.fontFamily = "monospace"
+        fpsText.fontSize = 14
+        fpsText.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        fpsText.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP
+        fpsText.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        fpsText.left = 8
+        fpsText.top = 8
+        fpsText.width = "80px"
+        fpsText.height = "20px"
+        fpsText.isPointerBlocker = false
+        this.gui.addControl(fpsText)
+
+        this._onFpsUpdate = this.scene.onBeforeRenderObservable.add(() => {
+            fpsText.text = `${this.scene.getEngine().getFps().toFixed(0)} FPS`
+        })
     }
 
     /*
@@ -261,6 +277,8 @@ export class World {
         this._onAfterCameraRender = undefined
         this._onKeyboard?.remove()
         this._onKeyboard = undefined
+        this._onFpsUpdate?.remove()
+        this._onFpsUpdate = undefined
         this._cameraFocusObserver?.remove()
         this._cameraFocusObserver = null
         this._timelineObserver?.remove()
