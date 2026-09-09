@@ -10,37 +10,29 @@ import { World } from "./core/world"
 /*
 Demo Factory — the site modelled by `public/models/demo.glb`.
 
-Seven areas, each an area marker mesh in the model. Six of them run equipment;
-Facilities has no operational data and shows an empty card:
+Six areas, each an area marker mesh in the model. Welding, bottle packaging and
+final packaging have no equipment entity of their own — the area card is the
+only card there is to read for them; the rest have one entity per machine:
 
     Area                     Marker mesh                Stations
-    Facilities               `Facilities`               —
-    Welding Line             `Welding line`             1
+    Welding Line             `Welding line`             — (area card only)
     Inspection Line          `Inspection line`          2
-    Bottle Packaging Line    `Bottle packaging line`    1
-    Final Packaging Line     `Final Packaging line`     1
+    Bottle Packaging Line    `Bottle packaging line`    — (area card only)
+    Final Packaging Line     `Final Packaging line`     — (area card only)
     Painting Line            `Painting`                 4
     Milling Line             `Milling line`             4
 
 Stations are matched to the model by node name:
 
-    Welding Station          `Welding station 2`        (the KUKA cell: robot, rotary table, clamps)
     Inspection Station 1/2   `Robot structure{,.001}`   (the two UR5e inspection cells)
-    Bottle Packaging         `Bottle conveyor:1`
-    Final Packaging          `Line`                     (palletizer, SCARA, box + part conveyors)
     UV Painting 1/2          `Cabin {1,2}`
     Drying                   `Drying Tunel`
     Polymerization           `Polimerization Tunel`
     Milling Station 1-4      `Machine{,.001,.002,.003}`
 
-Where the areas' single station carries the same readings as the area itself
-(welding and both packaging lines), one state is recorded onto both ids, so the
-area card and the machine card show the same figures.
-
 Unmapped for want of data: the second welding cell (`Rotary welding table.001`)
 and the welding palletizer, the pre-treatment baths (`Bath 1-3`) and the hanger
-conveyor (`Painting Hooks`) — all left over from the previous site — and every
-Facilities fixture.
+conveyor (`Painting Hooks`) — all left over from the previous site.
 
 There is no broker in this demo. The MQTT client is idle (nothing registers a
 topic, so `World` never connects it) and {@link ImplBuilder.startSimulation}
@@ -227,9 +219,9 @@ class Station<S extends StatusState> extends Entity<TransformNode, S> {
 
 /**
  * A building area. An area that owns equipment shows the roll-up of its
- * stations — status, machine tally, totals; one with no data at all
- * (Facilities) shows a plain `Ok` card. Unlike a station, an area keeps its own
- * accent color whatever its status, since that color also tints its zone fade.
+ * stations — status, machine tally, totals; one with no data at all shows a
+ * plain `Ok` card. Unlike a station, an area keeps its own accent color
+ * whatever its status, since that color also tints its zone fade.
  */
 class FactoryArea<S extends StatusState> extends Area<S> {
     constructor(
@@ -339,6 +331,7 @@ export interface PaintingAreaState extends StatusState {
 export interface MillingStationState extends StatusState {
     parts?: number
     cycleTime?: number
+    power?: number
 }
 
 /** The milling line's roll-up of its four machines. */
@@ -349,9 +342,6 @@ export interface MillingAreaState extends StatusState {
     cycleTime?: number
     power?: number
 }
-
-/** An area with no operational data at all (Facilities). */
-export interface EmptyAreaState extends StatusState {}
 
 /*
 Cards
@@ -431,6 +421,7 @@ const MILLING_AREA_STATS: StatSpec<MillingAreaState>[] = [
 const MILLING_STATION_STATS: StatSpec<MillingStationState>[] = [
     numberStat("Production", "Parts Produced", "hash", (s) => s.parts),
     numberStat("Production", "Cycle Time", "timer", (s) => s.cycleTime, "s", 1),
+    numberStat("Power", "Energy Consumption", "zap", (s) => s.power, "kW", 1),
 ]
 
 /*
@@ -633,9 +624,8 @@ interface LineSim {
 }
 
 /**
- * A line whose one station *is* the line — welding, bottle packaging and final
- * packaging. The same state is recorded onto the area and the station, so both
- * cards read identically, as the documented data set does.
+ * A line with no equipment entity of its own — welding, bottle packaging and
+ * final packaging — where the area card is the only card there is to read.
  */
 class SingleStationLine implements LineSim {
     private readonly station: StationSim
@@ -643,7 +633,6 @@ class SingleStationLine implements LineSim {
     constructor(
         private readonly world: World,
         private readonly areaId: string,
-        private readonly stationId: string,
         profile: StationProfile,
         /** `ratePerDay` reports units/day instead of parts/h; `conveyorSpeed` is the nominal belt speed in m/min. */
         private readonly options: { ratePerDay?: boolean; conveyorSpeed?: number } = {},
@@ -669,7 +658,6 @@ class SingleStationLine implements LineSim {
         }
 
         this.world.recordState(this.areaId, state)
-        this.world.recordState(this.stationId, state)
     }
 }
 
@@ -888,6 +876,7 @@ class MillingLine implements LineSim {
                 ...station.statusState,
                 parts: station.parts,
                 cycleTime: station.cycleTime,
+                power: station.power,
             })
         })
 
@@ -911,13 +900,12 @@ Areas
 
 /** One accent color per area, used for its zone fade, tag and stat tiles. */
 const AREA_COLORS = {
-    welding: new Color3(0.23, 0.51, 0.96),
-    inspection: new Color3(0.55, 0.36, 0.96),
-    bottlePackaging: new Color3(0.06, 0.65, 0.91),
-    finalPackaging: new Color3(0.02, 0.71, 0.83),
-    painting: new Color3(0.96, 0.55, 0.19),
-    milling: new Color3(0.34, 0.4, 0.95),
-    facilities: new Color3(0.13, 0.7, 0.47),
+    welding: Color3.FromHexString("#1f77b4"), // blue
+    inspection: Color3.FromHexString("#9467bd"), // purple
+    bottlePackaging: Color3.FromHexString("#ff7f0e"), // orange
+    finalPackaging: Color3.FromHexString("#e377c2"), // pink
+    painting: Color3.FromHexString("#d62728"), // red
+    milling: Color3.FromHexString("#2ca02c"), // green
 }
 
 /*
@@ -1027,17 +1015,10 @@ export class ImplBuilder {
             new Station<S>(`station:${id}`, name, this.findNode(node), floor, world, area, specs)
 
         /*
-        Facilities — the offices, canteen and warehouse. No operational data.
-        */
-
-        const areaFacilities = area<EmptyAreaState>("facilities", "Facilities", "Facilities", AREA_COLORS.facilities, [])
-
-        /*
         Welding line — one KUKA cell on the rotary table.
         */
 
         const areaWelding = area<LineState>("welding", "Welding Line", "Welding line", AREA_COLORS.welding, WELDING_STATS)
-        const welding = station<LineState>("welding", "Welding Station", "Welding station 2", areaWelding, WELDING_STATS)
 
         /*
         Inspection line — two UR5e cells measuring in parallel.
@@ -1053,7 +1034,6 @@ export class ImplBuilder {
         */
 
         const areaBottlePackaging = area<LineState>("bottle-packaging", "Bottle Packaging Line", "Bottle packaging line", AREA_COLORS.bottlePackaging, BOTTLE_PACKAGING_STATS)
-        const bottlePackaging = station<LineState>("bottle-packaging", "Bottle Packaging", "Bottle conveyor:1", areaBottlePackaging, BOTTLE_PACKAGING_STATS)
 
         /*
         Final packaging line — the SCARA, the palletizing KUKA and the box and
@@ -1061,7 +1041,6 @@ export class ImplBuilder {
         */
 
         const areaFinalPackaging = area<LineState>("final-packaging", "Final Packaging Line", "Final Packaging line", AREA_COLORS.finalPackaging, FINAL_PACKAGING_STATS)
-        const finalPackaging = station<LineState>("final-packaging", "Final Packaging", "Line", areaFinalPackaging, FINAL_PACKAGING_STATS)
 
         /*
         Painting line — two UV booths into the drying and polymerization tunnels.
@@ -1087,16 +1066,12 @@ export class ImplBuilder {
         */
 
         world.entities.push(
-            areaFacilities,
             areaWelding,
-            welding,
             areaInspection,
             inspection1,
             inspection2,
             areaBottlePackaging,
-            bottlePackaging,
             areaFinalPackaging,
-            finalPackaging,
             areaPainting,
             uvPainting1,
             uvPainting2,
@@ -1112,7 +1087,7 @@ export class ImplBuilder {
         */
 
         this.startSimulation(world, [
-            new SingleStationLine(world, areaWelding.id, welding.id, {
+            new SingleStationLine(world, areaWelding.id, {
                 cycleTime: 42,
                 power: { running: 37, idle: 6 },
                 alarms: WELDING_ALARMS,
@@ -1123,7 +1098,6 @@ export class ImplBuilder {
             new SingleStationLine(
                 world,
                 areaBottlePackaging.id,
-                bottlePackaging.id,
                 {
                     cycleTime: 6,
                     power: { running: 12.5, idle: 2 },
@@ -1135,7 +1109,6 @@ export class ImplBuilder {
             new SingleStationLine(
                 world,
                 areaFinalPackaging.id,
-                finalPackaging.id,
                 {
                     cycleTime: 26,
                     power: { running: 16, idle: 3 },

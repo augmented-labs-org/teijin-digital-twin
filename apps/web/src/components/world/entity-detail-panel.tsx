@@ -191,7 +191,7 @@ const EntityDetailBody = memo(function EntityDetailBody({
                             return (
                                 <span
                                     key={badge.label}
-                                    className="rounded-full px-2 py-0.5 text-xs font-semibold"
+                                    className="rounded-full px-2 py-1 text-xs font-semibold"
                                     style={{ backgroundColor: hexToRgba(badgeColor, 0.12), color: badgeColor }}
                                 >
                                     {badge.label}

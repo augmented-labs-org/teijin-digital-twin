@@ -21,7 +21,7 @@ class AreaFadeFeature<S extends EntityState> implements EntityFeature {
         const { min } = getLocalBoundingBox(this.area.node)
 
         material.alpha = 0
-        material.setup(min.y, min.y + 0.9, this.area.color)
+        material.setup(min.y, min.y + 0.05, this.area.color)
 
         this.area.node.material = material
         this.material = material

@@ -1,6 +1,5 @@
 import { EntityDetailPanel } from "@/components/world/entity-detail-panel"
 import { Area } from "@/core/building/area"
-import type { Entity } from "@/core/building/entity"
 import { useFocusedEntity } from "@/hooks/use-focused-entity"
 import { useWorld } from "@/hooks/use-world"
 import { Button } from "@workspace/ui/components/button"
@@ -10,7 +9,7 @@ import { XIcon } from "lucide-react"
 import { AnimatePresence, motion } from "motion/react"
 import { useEffect } from "react"
 
-function AreaRow({ entity, focused }: { entity: Entity; focused: boolean }) {
+function AreaRow({ entity, focused }: { entity: Area<any>; focused: boolean }) {
     return (
         <button
             type="button"
@@ -26,10 +25,14 @@ function AreaRow({ entity, focused }: { entity: Entity; focused: boolean }) {
                 }
             }}
             className={cn(
-                "rounded-md px-2 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-muted",
+                "flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-muted",
                 focused && "bg-muted font-medium",
             )}
         >
+            <span
+                className="size-2.5 shrink-0 rounded-[3px]"
+                style={{ backgroundColor: entity.color.toHexString() }}
+            />
             {entity.name}
         </button>
     )
@@ -58,11 +61,11 @@ export function EntitySidebar() {
 
     return (
         <>
-            <Card className="fixed top-4 bottom-4 left-4 z-40 flex w-64 flex-col">
+            <Card className="fixed top-4 left-4 z-40 flex max-h-[calc(100vh-2rem)] w-64 flex-col">
                 <CardHeader>
                     <CardTitle>Areas</CardTitle>
                 </CardHeader>
-                <CardContent className="flex flex-1 flex-col gap-0.5 overflow-y-auto">
+                <CardContent className="flex flex-col gap-0.5 overflow-y-auto">
                     {areas.map((entity) => (
                         <AreaRow key={entity.id} entity={entity} focused={focused === entity} />
                     ))}
@@ -79,22 +82,20 @@ export function EntitySidebar() {
                         transition={{ type: "spring", stiffness: 320, damping: 32 }}
                         className="fixed top-4 right-4 bottom-4 z-40 flex w-full max-w-sm flex-col"
                     >
-                        <Card className="flex flex-1 flex-col overflow-hidden">
-                            <CardHeader className="flex flex-row items-center justify-between">
-                                <CardTitle>Entity Details</CardTitle>
-                                <Button
-                                    variant="ghost"
-                                    size="icon-sm"
-                                    onClick={() => {
-                                        if (world) {
-                                            world.focusedEntity = undefined
-                                        }
-                                    }}
-                                >
-                                    <XIcon />
-                                    <span className="sr-only">Close</span>
-                                </Button>
-                            </CardHeader>
+                        <Card className="relative flex flex-1 flex-col overflow-hidden">
+                            <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                className="absolute top-4 right-4 z-10"
+                                onClick={() => {
+                                    if (world) {
+                                        world.focusedEntity = undefined
+                                    }
+                                }}
+                            >
+                                <XIcon />
+                                <span className="sr-only">Close</span>
+                            </Button>
                             <CardContent className="flex flex-1 flex-col overflow-hidden p-0">
                                 <EntityDetailPanel entity={focused} />
                             </CardContent>
