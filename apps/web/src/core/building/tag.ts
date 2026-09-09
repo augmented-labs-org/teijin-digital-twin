@@ -1,6 +1,6 @@
 import { EventState, Observer, Scene, TransformNode, Vector3 } from "@babylonjs/core"
 import { AdvancedDynamicTexture, Control, Ellipse, Rectangle, StackPanel, TextBlock, Vector2WithInfo } from "@babylonjs/gui"
-import { getLocalBoundingBox } from "../utils/bounds"
+import { getLocalBoundingBox, getLocalCenterOfMass } from "../utils/bounds"
 import { guiPadding } from "../utils/gui"
 import { type Entity } from "./entity"
 import { BADGE_TONE_COLOR } from "./ui-schema"
@@ -78,9 +78,10 @@ export class EntityTag {
         this._anchor.parent = this.node
 
         const bounds = getLocalBoundingBox(this.node, true)
-        this._anchor.position.x = (bounds.max.x + bounds.min.x) / 2
+        const centerOfMass = getLocalCenterOfMass(this.node, true)
+        this._anchor.position.x = centerOfMass.x
         this._anchor.position.y = bounds.max.y
-        this._anchor.position.z = (bounds.max.z + bounds.min.z) / 2
+        this._anchor.position.z = centerOfMass.z
 
         this._icon = this._buildIcon()
         this._label = this._buildLabel()
