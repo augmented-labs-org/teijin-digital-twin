@@ -220,8 +220,9 @@ class Station<S extends StatusState> extends Entity<TransformNode, S> {
 /**
  * A building area. An area that owns equipment shows the roll-up of its
  * stations — status, machine tally, totals; one with no data at all shows a
- * plain `Ok` card. Unlike a station, an area keeps its own accent color
- * whatever its status, since that color also tints its zone fade.
+ * plain `Ok` card. Its zone fade always tints with its own accent color, but
+ * like a station, its tag stays green unless a stopped or alarming machine
+ * pulls the tag's color to match.
  */
 class FactoryArea<S extends StatusState> extends Area<S> {
     constructor(
@@ -247,7 +248,7 @@ class FactoryArea<S extends StatusState> extends Area<S> {
         return {
             name: this.name,
             status: equipped ? header.status : "Ok",
-            color: this.color.toHexString(),
+            color: equipped && this.state.status !== "running" ? header.color : "#22c55e",
             badges: equipped ? header.badges : [],
             error: header.error,
             statGroups: buildStats(this.state, this.specs),

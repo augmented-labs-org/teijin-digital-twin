@@ -3,7 +3,6 @@ import { AdvancedDynamicTexture, Control, Ellipse, Rectangle, StackPanel, TextBl
 import { getLocalBoundingBox, getLocalCenterOfMass } from "../utils/bounds"
 import { guiPadding } from "../utils/gui"
 import { type Entity } from "./entity"
-import { BADGE_TONE_COLOR } from "./ui-schema"
 
 const CARD_BACKGROUND = "#ffffff"
 const TEXT_PRIMARY = "#111827"
@@ -52,9 +51,6 @@ export class EntityTag {
     private _icon!: Ellipse
     private _label!: Rectangle
 
-    /** The alarm-status dot next to the name — areas only; see {@link _buildLabel}. */
-    private _statusDot?: Ellipse
-
     private _renderObserver: Observer<Scene> | null = null
 
     /** {@link Entity.stateVersion} the controls were last colored from, or -1 before the first sync. */
@@ -97,11 +93,6 @@ export class EntityTag {
         this._anchor.dispose()
     }
 
-    /** An area's tag carries a status and headline stat; other entities keep to just their name. */
-    private get _isArea() {
-        return this.entity.area === undefined
-    }
-
     /*
     Controls
     */
@@ -133,7 +124,7 @@ export class EntityTag {
         row.isVertical = false
         row.adaptHeightToChildren = true
         row.adaptWidthToChildren = true
-        guiPadding(row, this._isArea ? 5 : 6, 24, this._isArea ? 5 : 6)
+        guiPadding(row, 6, 24, 6)
 
         const name = new TextBlock()
         name.text = this.entity.name
@@ -144,31 +135,6 @@ export class EntityTag {
         name.heightInPixels = 18
         name.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
         row.addControl(name)
-
-        // Only an area's tag carries an alarm-status dot — the extra detail
-        // matters most zoomed out, where an area's tag is the only one showing
-        // at all; a station's tag stays to just its name.
-        if (this._isArea) {
-            // Padding on the dot itself would shrink its own measure (only the
-            // padded side), squashing the circle into an oval — so the gap is
-            // reserved by a plain wrapper instead, sized wider than the dot.
-            const dotSlot = new Rectangle()
-            dotSlot.width = "14px"
-            dotSlot.height = "8px"
-            dotSlot.thickness = 0
-            dotSlot.isHitTestVisible = false
-            dotSlot.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER
-
-            this._statusDot = new Ellipse()
-            this._statusDot.width = "8px"
-            this._statusDot.height = "8px"
-            this._statusDot.thickness = 0
-            this._statusDot.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT
-            this._statusDot.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER
-            dotSlot.addControl(this._statusDot)
-
-            row.addControl(dotSlot)
-        }
 
         root.addControl(row)
 
@@ -229,11 +195,6 @@ export class EntityTag {
             const schema = this.entity.buildUiSchema()
             this._icon.color = schema.color
             this._label.color = schema.color
-
-            if (this._statusDot) {
-                const tone = schema.badges[0]?.tone ?? "neutral"
-                this._statusDot.background = BADGE_TONE_COLOR[tone]
-            }
         }
 
         // 2 = full label, 1 = icon only, 0 = hidden. A node on a hidden floor is
