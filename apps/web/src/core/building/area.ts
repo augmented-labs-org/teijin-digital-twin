@@ -60,16 +60,4 @@ export abstract class Area<S extends EntityState> extends Entity<AbstractMesh, S
 
         this.features.push(new AreaFadeFeature(this))
     }
-
-    override set focused(val: boolean) {
-        if (super.focused && !val) {
-            this.world.outlineLayer.clearSelection()
-        }
-
-        if (!super.focused && val) {
-            this.world.outlineLayer.addSelection(this.node)
-        }
-
-        super.focused = val
-    }
 }

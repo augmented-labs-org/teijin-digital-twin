@@ -6,7 +6,7 @@ import { useTimeline } from "@/hooks/use-timeline"
 import { useWorld } from "@/hooks/use-world"
 import { Card, CardContent, CardHeader } from "@workspace/ui/components/card"
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@workspace/ui/components/chart"
-import { useEffect, useMemo, useState } from "react"
+import { memo, useEffect, useMemo, useState } from "react"
 import { CartesianGrid, Line, LineChart, ReferenceLine, XAxis, YAxis } from "recharts"
 
 /** `#rrggbb` → `rgba(r, g, b, alpha)`, used to tint an icon/badge backdrop by the entity's accent color. */
@@ -22,7 +22,7 @@ function formatTime(t: number): string {
     return new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
 }
 
-function StatCard({
+const StatCard = memo(function StatCard({
     stat,
     data,
     color,
@@ -100,7 +100,7 @@ function StatCard({
             </CardContent>
         </Card>
     )
-}
+})
 
 /**
  * Per-stat time series for the charts, derived by replaying `buildUiSchema`
@@ -137,7 +137,10 @@ function buildStatHistories(entity: Entity, history: Sample[]): Map<string, { t:
     return histories
 }
 
-function EntityDetailBody({
+/** Shared reference for stats with no history yet, so {@link StatCard}'s memo sees a stable `data` prop. */
+const EMPTY_HISTORY: { t: number; value: number }[] = []
+
+const EntityDetailBody = memo(function EntityDetailBody({
     entity,
     history,
     markTime,
@@ -194,7 +197,7 @@ function EntityDetailBody({
                                 <StatCard
                                     key={stat.name}
                                     stat={stat}
-                                    data={histories.get(stat.name) ?? []}
+                                    data={histories.get(stat.name) ?? EMPTY_HISTORY}
                                     color={color}
                                     currentTime={markTime}
                                 />
@@ -205,7 +208,7 @@ function EntityDetailBody({
             </div>
         </>
     )
-}
+})
 
 /**
  * The entity detail panel content, shown by {@link EntitySidebar} for whichever
@@ -218,6 +221,10 @@ function EntityDetailBody({
  * someone scrubs the history slider. This panel always shows full live history
  * regardless of where that scrubber sits; only the scrub-position marker line
  * (via {@link useTimeline}) reacts to seek/goLive.
+ *
+ * `onChanged` fires for every entity in the world, not just this one — MQTT
+ * traffic for the other machines on screen shouldn't cost this panel a replay
+ * of its own charts, so updates for any other key are ignored.
  */
 export function EntityDetailPanel({ entity }: { entity: Entity | undefined }) {
     const world = useWorld((s) => s.world)
@@ -228,7 +235,11 @@ export function EntityDetailPanel({ entity }: { entity: Entity | undefined }) {
         if (!world || !entity) {
             return
         }
-        const observer = world.timeline.source.onChanged.add(() => forceUpdate((n) => n + 1))
+        const observer = world.timeline.source.onChanged.add(({ key }) => {
+            if (key === entity.id) {
+                forceUpdate((n) => n + 1)
+            }
+        })
         return () => observer.remove()
     }, [world, entity])
 

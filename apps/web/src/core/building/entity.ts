@@ -1,4 +1,4 @@
-import { Observer, Scene, TransformNode } from "@babylonjs/core";
+import { AbstractMesh, Observer, Scene, TransformNode } from "@babylonjs/core";
 import { AdvancedDynamicTexture } from "@babylonjs/gui";
 import type { World } from "../world";
 import type { Building } from "./building";
@@ -79,6 +79,11 @@ export abstract class Entity<N extends TransformNode = TransformNode, S extends 
 
     get focused() {
         return this._focused
+    }
+
+    /** Meshes to highlight in the world's outline layer when this entity is focused or hovered. */
+    getOutlineMeshes(): AbstractMesh[] {
+        return this.node instanceof AbstractMesh ? [this.node] : this.node.getChildMeshes()
     }
 
     /*

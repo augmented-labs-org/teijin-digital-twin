@@ -228,22 +228,30 @@ class PressEntity extends Machine<PressState> {
         const s = this.state
         const stats = new StatSet()
 
-        stats.push("Production", statValue("Product", "tag", s.product ?? NO_VALUE, s.product ?? NO_VALUE))
-        stats.push("Production", statValue("Parts", "hash", `${round(s.parts)}`, s.parts ?? 0))
+        if (s.product !== undefined) {
+            stats.push("Production", statValue("Product", "tag", s.product, s.product))
+        }
+        if (s.parts !== undefined) {
+            stats.push("Production", statValue("Parts", "hash", `${round(s.parts)}`, s.parts))
+        }
         // stats.push("Production", statValue("Pressure", "gauge", setpointText(s.pressure, s.targetPressure, "bar"), s.pressure ?? 0))
         // stats.push("Production", statValue("Platen", "ruler", `${num(s.platenPosition, 0)} mm`, s.platenPosition ?? 0))
         // stats.push("Production", statValue("Platen State", "settings", PLATEN_STATES[round(s.platenState)] ?? NO_VALUE, PLATEN_STATES[round(s.platenState)] ?? NO_VALUE))
         // stats.push("Production", statValue("Platen Speed", "move", `${num(s.platenSpeed, 1)} mm/s`, s.platenSpeed ?? 0))
         // stats.push("Production", statValue("Compression", "timer", setpointText(s.compressionTime, s.targetTime, "s"), s.compressionTime ?? 0))
         // stats.push("Production", statValue("Elapsed", "clock", `${num(s.totalTime, 1)} s`, s.totalTime ?? 0))
-        stats.push("Production", statValue("Remaining", "hourglass", `${num(s.remainingTime, 1)} s`, s.remainingTime ?? 0))
+        if (s.remainingTime !== undefined) {
+            stats.push("Production", statValue("Remaining", "hourglass", `${num(s.remainingTime, 1)} s`, s.remainingTime))
+        }
         // stats.push("Production", statValue("Fixed Platen 1", "thermometer", setpointText(s.fixedPlaten1, s.fixedPlaten1Setpoint, "°C"), s.fixedPlaten1 ?? 0))
         // stats.push("Production", statValue("Fixed Platen 2", "thermometer", setpointText(s.fixedPlaten2, s.fixedPlaten2Setpoint, "°C"), s.fixedPlaten2 ?? 0))
         // stats.push("Production", statValue("Movable Platen 1", "thermometer", setpointText(s.movablePlaten1, s.movablePlaten1Setpoint, "°C"), s.movablePlaten1 ?? 0))
         // stats.push("Production", statValue("Movable Platen 2", "thermometer", setpointText(s.movablePlaten2, s.movablePlaten2Setpoint, "°C"), s.movablePlaten2 ?? 0))
         // stats.push("Production", statValue("Mold Cavity", "thermometer", `${num(s.moldCavityTemp, 1)} °C`, s.moldCavityTemp ?? 0))
         // stats.push("Production", statValue("Mold Male", "thermometer", `${num(s.moldMaleTemp, 1)} °C`, s.moldMaleTemp ?? 0))
-        stats.push("Production", statValue("Cycle Time", "timer", `${num(s.cycleTime, 0)} s`, s.cycleTime ?? 0))
+        if (s.cycleTime !== undefined) {
+            stats.push("Production", statValue("Cycle Time", "timer", `${num(s.cycleTime, 0)} s`, s.cycleTime))
+        }
 
         return { name: this.name, ...this.header(), statGroups: stats.build() }
     }
@@ -271,11 +279,21 @@ class PaintingLineEntity extends Machine<PaintingLineState> {
         const s = this.state
         const stats = new StatSet()
 
-        stats.push("Production", statValue("Line Speed", "move", `${num(s.lineSpeed, 2)} m/min`, s.lineSpeed ?? 0))
-        stats.push("Production", statValue("Downtime", "ban", yesNo(s.downtime), yesNo(s.downtime)))
-        stats.push("Production", statValue("Alarm 1", "siren", alarm(s.alarm1), alarm(s.alarm1)))
-        stats.push("Production", statValue("Alarm 2", "siren", alarm(s.alarm2), alarm(s.alarm2)))
-        stats.push("Production", statValue("Alarm 3", "siren", alarm(s.alarm3), alarm(s.alarm3)))
+        if (s.lineSpeed !== undefined) {
+            stats.push("Production", statValue("Line Speed", "move", `${num(s.lineSpeed, 2)} m/min`, s.lineSpeed))
+        }
+        if (s.downtime !== undefined) {
+            stats.push("Production", statValue("Downtime", "ban", yesNo(s.downtime), yesNo(s.downtime)))
+        }
+        if (s.alarm1 !== undefined) {
+            stats.push("Production", statValue("Alarm 1", "siren", alarm(s.alarm1), alarm(s.alarm1)))
+        }
+        if (s.alarm2 !== undefined) {
+            stats.push("Production", statValue("Alarm 2", "siren", alarm(s.alarm2), alarm(s.alarm2)))
+        }
+        if (s.alarm3 !== undefined) {
+            stats.push("Production", statValue("Alarm 3", "siren", alarm(s.alarm3), alarm(s.alarm3)))
+        }
 
         return { name: this.name, ...this.header(), statGroups: stats.build() }
     }
@@ -303,10 +321,14 @@ class BathEntity extends Machine<BathState> {
         const s = this.state
         const stats = new StatSet()
 
-        stats.push("Environment", statValue("Temperature", "thermometer", `${num(s.temperature, 1)} °C`, s.temperature ?? 0))
-        stats.push("Environment", statValue("Pressure", "gauge", `${num(s.pressure, 2)} bar`, s.pressure ?? 0))
-        if (this.hasPh) {
-            stats.push("Environment", statValue("pH", "test-tube", num(s.ph, 2), s.ph ?? 0))
+        if (s.temperature !== undefined) {
+            stats.push("Environment", statValue("Temperature", "thermometer", `${num(s.temperature, 1)} °C`, s.temperature))
+        }
+        if (s.pressure !== undefined) {
+            stats.push("Environment", statValue("Pressure", "gauge", `${num(s.pressure, 2)} bar`, s.pressure))
+        }
+        if (this.hasPh && s.ph !== undefined) {
+            stats.push("Environment", statValue("pH", "test-tube", num(s.ph, 2), s.ph))
         }
 
         return { name: this.name, ...this.header(), statGroups: stats.build() }
@@ -328,8 +350,12 @@ class BoothEntity extends Machine<BoothState> {
         const s = this.state
         const stats = new StatSet()
 
-        stats.push("Environment", statValue("Temperature", "thermometer", `${num(s.temperature, 1)} °C`, s.temperature ?? 0))
-        stats.push("Environment", statValue("Humidity", "droplet", `${num(s.humidity, 1)} %`, s.humidity ?? 0))
+        if (s.temperature !== undefined) {
+            stats.push("Environment", statValue("Temperature", "thermometer", `${num(s.temperature, 1)} °C`, s.temperature))
+        }
+        if (s.humidity !== undefined) {
+            stats.push("Environment", statValue("Humidity", "droplet", `${num(s.humidity, 1)} %`, s.humidity))
+        }
 
         return { name: this.name, ...this.header(), statGroups: stats.build() }
     }
@@ -349,7 +375,9 @@ class DryerEntity extends Machine<DryerState> {
         const s = this.state
         const stats = new StatSet()
 
-        stats.push("Environment", statValue("Temperature", "flame", `${num(s.temperature, 1)} °C`, s.temperature ?? 0))
+        if (s.temperature !== undefined) {
+            stats.push("Environment", statValue("Temperature", "flame", `${num(s.temperature, 1)} °C`, s.temperature))
+        }
 
         return { name: this.name, ...this.header(), statGroups: stats.build() }
     }

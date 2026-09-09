@@ -41,7 +41,7 @@ export function EntitySidebar() {
                         <Button
                             variant="ghost"
                             size="icon-sm"
-                            className="absolute top-4 left-4 bg-secondary"
+                            className="absolute top-4 right-4 bg-secondary"
                             onClick={() => setActivePanel(null)}
                         >
                             <XIcon />

@@ -10,6 +10,9 @@ export type SceneSnapshot = Record<string, EntityState>
 
 type TimeRange = { start: number; end: number }
 
+/** Which entity's state changed, passed to {@link TimelineSource.onChanged} observers. */
+export type TimelineSourceChange = { key: string }
+
 /**
  * Where timeline history comes from. Today it is recorded in-memory
  * ({@link InMemoryTimelineSource}); in the future a database-backed source can be
@@ -26,17 +29,27 @@ export interface TimelineSource {
     /** The most recent structured state per entity. */
     latest(): SceneSnapshot
 
-    /** Every recorded sample for one entity, oldest first (for history graphs). */
+    /**
+     * Every recorded sample for one entity, oldest first (for history graphs).
+     * The returned array is a stable reference until that entity's next record —
+     * callers must not mutate it, but may rely on it for cheap change detection
+     * (e.g. a `useMemo` dependency).
+     */
     history(key: string): Sample[]
 
-    /** Fires whenever new state is recorded (i.e. the range or latest state changes). */
-    readonly onChanged: Observable<TimelineSource>
+    /** Fires whenever new state is recorded, naming which entity changed. */
+    readonly onChanged: Observable<TimelineSourceChange>
 }
 
 export type Sample = { t: number; state: EntityState }
 
-/** Keep memory bounded until a database backs the history. */
-const MAX_SAMPLES_PER_ENTITY = 5000
+/**
+ * Keep memory bounded until a database backs the history. Each sample holds a
+ * full merged {@link EntityState}, not a diff, so this caps both memory and the
+ * per-entity work `stateAt`/`history` do — kept low since live MQTT traffic can
+ * record many samples per entity in a short span.
+ */
+const MAX_SAMPLES_PER_ENTITY = 500
 
 /**
  * Shallow-merge a partial snapshot onto a base. Also deep-merges the `stats`
@@ -55,7 +68,7 @@ function mergeState(base: EntityState, partial: Partial<EntityState>): EntitySta
  * keeps {@link stateAt} a simple per-entity binary search.
  */
 export class InMemoryTimelineSource implements TimelineSource {
-    readonly onChanged = new Observable<TimelineSource>()
+    readonly onChanged = new Observable<TimelineSourceChange>()
 
     private readonly samplesByKey = new Map<string, Sample[]>()
     private readonly latestByKey = new Map<string, EntityState>()
@@ -68,25 +81,27 @@ export class InMemoryTimelineSource implements TimelineSource {
             : { start: this._start, end: this._end }
     }
 
-    /** Fold a partial update onto the entity's running state and record it at `t`. */
+    /**
+     * Fold a partial update onto the entity's running state and record it at `t`.
+     * Rebuilds this entity's sample array rather than mutating it in place, so
+     * `history(key)` can hand out the stored array directly: its identity only
+     * changes when this key's history actually does, which lets consumers (e.g.
+     * a `useMemo` in the detail panel) skip work for every other entity's updates.
+     */
     record(key: string, partial: Partial<EntityState>, t: number) {
         const merged = mergeState(this.latestByKey.get(key) ?? {}, partial)
         this.latestByKey.set(key, merged)
 
-        let samples = this.samplesByKey.get(key)
-        if (!samples) {
-            samples = []
-            this.samplesByKey.set(key, samples)
-        }
-        samples.push({ t, state: merged })
-        if (samples.length > MAX_SAMPLES_PER_ENTITY) {
-            samples.shift()
-        }
+        const samples = this.samplesByKey.get(key) ?? []
+        const kept = samples.length >= MAX_SAMPLES_PER_ENTITY
+            ? samples.slice(samples.length - MAX_SAMPLES_PER_ENTITY + 1)
+            : samples
+        this.samplesByKey.set(key, [...kept, { t, state: merged }])
 
         this._start = this._start === undefined ? t : Math.min(this._start, t)
         this._end = this._end === undefined ? t : Math.max(this._end, t)
 
-        this.onChanged.notifyObservers(this)
+        this.onChanged.notifyObservers({ key })
     }
 
     stateAt(t: number): SceneSnapshot {
@@ -109,7 +124,7 @@ export class InMemoryTimelineSource implements TimelineSource {
     }
 
     history(key: string): Sample[] {
-        return [...(this.samplesByKey.get(key) ?? [])]
+        return this.samplesByKey.get(key) ?? []
     }
 }
 

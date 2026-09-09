@@ -59,6 +59,8 @@ export class World {
 
     public readonly onFocusEntityChanged = new Observable<Entity | undefined>()
 
+    private _hoveredEntity: Entity | undefined = undefined
+
     public readonly onEntityGroupActiveChanged = new Observable<EntityGroup>()
 
     /** Whether the camera is zoomed out far enough that the world map should take over. */
@@ -86,7 +88,11 @@ export class World {
     /** The one shared fullscreen GUI layer. All label features attach controls here. */
     public readonly gui: AdvancedDynamicTexture
 
+    /** Outlines the focused entity/area (black). Hover uses its own layer since a layer's outlineColor is shared by its whole selection. */
     public readonly outlineLayer: SelectionOutlineLayer
+
+    /** Outlines the hovered entity, e.g. from the entity tree panel (white). */
+    public readonly hoverOutlineLayer: SelectionOutlineLayer
 
     //
 
@@ -145,6 +151,11 @@ export class World {
         this.outlineLayer.outlineColor = new Color3(0.1, 0.1, 0.1);
         this.outlineLayer.outlineThickness = 2.0;
         this.outlineLayer.occlusionStrength = 0;
+
+        this.hoverOutlineLayer = new SelectionOutlineLayer("worldHoverSelectionOutline", this.scene)
+        this.hoverOutlineLayer.outlineColor = Color3.White();
+        this.hoverOutlineLayer.outlineThickness = 2.0;
+        this.hoverOutlineLayer.occlusionStrength = 0;
 
         this._onAfterCameraRender = scene.onAfterRenderCameraObservable.add(this._afterCameraRender)
         this._onKeyboard = scene.onKeyboardObservable.add(this._onKeyboardEvent)
@@ -246,10 +257,10 @@ export class World {
         fpsText.outlineWidth = 3
         fpsText.fontFamily = "monospace"
         fpsText.fontSize = 14
-        fpsText.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
+        fpsText.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT
         fpsText.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP
-        fpsText.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT
-        fpsText.left = 8
+        fpsText.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT
+        fpsText.left = -8
         fpsText.top = 8
         fpsText.width = "80px"
         fpsText.height = "20px"
@@ -289,6 +300,7 @@ export class World {
         this._entities.length = 0
         this.gui.dispose()
         this.outlineLayer.dispose()
+        this.hoverOutlineLayer.dispose()
         this.onFocusBuildingChanged.clear()
         this.onMapModeChanged.clear()
     }
@@ -391,9 +403,44 @@ export class World {
         }
 
         this.onFocusEntityChanged.notifyObservers(next)
+        this._syncOutlineSelection()
 
         if (this._focusedEntity) {
             this.moveCameraToFocusedEntity()
+        }
+    }
+
+    get hoveredEntity() {
+        return this._hoveredEntity
+    }
+
+    /** Highlights an entity in the scene via {@link outlineLayer} without focusing it (e.g. hovering it in the entity tree). */
+    set hoveredEntity(next: Entity | undefined) {
+        if (next === this._hoveredEntity) {
+            return
+        }
+
+        this._hoveredEntity = next
+        this._syncOutlineSelection()
+    }
+
+    /**
+     * Recomputes the outline layers' selections from the current focused and hovered
+     * entities. Each layer only supports replacing its whole selection at once, so
+     * both are re-added here rather than managed independently by each entity. Focus
+     * and hover live on separate layers since a layer's outlineColor applies to its
+     * whole selection.
+     */
+    private _syncOutlineSelection() {
+        this.outlineLayer.clearSelection()
+        this.hoverOutlineLayer.clearSelection()
+        
+        if (this._hoveredEntity) {
+            this.hoverOutlineLayer.addSelection(this._hoveredEntity.getOutlineMeshes())
+        }
+        
+        if (this._focusedEntity && this._focusedEntity !== this._hoveredEntity) {
+            this.outlineLayer.addSelection(this._focusedEntity.getOutlineMeshes())
         }
     }
 

@@ -2,6 +2,7 @@ import type { Entity } from "@/core/building/entity"
 import { useFocusedEntity } from "@/hooks/use-focused-entity"
 import { useWorld } from "@/hooks/use-world"
 import { cn } from "@workspace/ui/lib/utils"
+import { useEffect } from "react"
 
 function EntityRow({ entity, focused }: { entity: Entity; focused: boolean }) {
     return (
@@ -9,6 +10,14 @@ function EntityRow({ entity, focused }: { entity: Entity; focused: boolean }) {
             type="button"
             onClick={() => {
                 entity.world.focusedEntity = entity
+            }}
+            onMouseEnter={() => {
+                entity.world.hoveredEntity = entity
+            }}
+            onMouseLeave={() => {
+                if (entity.world.hoveredEntity === entity) {
+                    entity.world.hoveredEntity = undefined
+                }
             }}
             className={cn(
                 "rounded-md px-2 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-muted",
@@ -28,6 +37,16 @@ function EntityRow({ entity, focused }: { entity: Entity; focused: boolean }) {
 export function EntityTreePanel() {
     const world = useWorld((s) => s.world)
     const focused = useFocusedEntity()
+
+    // Clear the hover outline if the panel closes (or the world changes) mid-hover,
+    // since a row's onMouseLeave won't fire once it's unmounted.
+    useEffect(() => {
+        return () => {
+            if (world) {
+                world.hoveredEntity = undefined
+            }
+        }
+    }, [world])
 
     return (
         <>
