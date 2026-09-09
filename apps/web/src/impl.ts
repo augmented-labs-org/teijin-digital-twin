@@ -3,113 +3,154 @@ import { Area } from "./core/building/area"
 import { Building, Floor } from "./core/building/building"
 import { Entity, type EntityState } from "./core/building/entity"
 import { PICK_PRIORITY } from "./core/building/pick-priority"
+import type { UiSchema, UiStatValue } from "./core/building/ui-schema"
 import type { StatIcon } from "./core/utils/icons"
 import { EntityGroup, World } from "./core/world"
-import type { UiSchema, UiStatValue } from "./core/building/ui-schema"
 
 /*
-Teijin Leça — the site simulated by `tools/teijin.py`.
+Demo Factory — the site modelled by `public/models/demo.glb`.
 
-Two machines publish under `teijin/leca/<machine>/<source>/<Signal_Name>`, one
-sweep per second, 106 signals in total:
+Seven areas, each an area marker mesh in the model. Six of them run equipment;
+Facilities has no operational data and shows an empty card:
 
-    php-1250          plc-a (11) · plc-b (11) · energy (20)
-    pintura-classica  plc (44)  · energy (20)
+    Area                     Marker mesh                Stations
+    Facilities               `Facilities`               —
+    Welding Line             `Welding line`             1
+    Inspection Line          `Inspection line`          2
+    Bottle Packaging Line    `Bottle packaging line`    1
+    Final Packaging Line     `Final Packaging line`     1
+    Painting Line            `Painting`                 4
+    Milling Line             `Milling line`             4
 
-Every one of those signals is wired below. Payloads are `{value, unit, ts}` — the
-world unwraps `.value` before it is folded into an entity's state, so only the
-raw value is dealt with here; formatting for display happens in each entity's
-`buildUiSchema`.
+Stations are matched to the model by node name:
 
-Nodes are matched to `teijin.glb` by name. Most of it is unambiguous (`Bath 1-3`
-against the `Bath_{1,2,3}_*` signals, `Cabin 1-2` against `Cabin_{1,2}_*`,
-`Drying Tunel` against `Dryer_Temperature`); the rest is inferred:
+    Welding Station          `Welding station 2`        (the KUKA cell: robot, rotary table, clamps)
+    Inspection Station 1/2   `Robot structure{,.001}`   (the two UR5e inspection cells)
+    Bottle Packaging         `Bottle conveyor:1`
+    Final Packaging          `Line`                     (palletizer, SCARA, box + part conveyors)
+    UV Painting 1/2          `Cabin {1,2}`
+    Drying                   `Drying Tunel`
+    Polymerization           `Polimerization Tunel`
+    Milling Station 1-4      `Machine{,.001,.002,.003}`
 
-  - `Press 1` is taken to be the PHP 1250. The model has a second press
-    (`Press 2`) that the simulator doesn't publish, so it is left unmapped.
-  - `Painting Hooks` — the hanger conveyor running the length of the line — is
-    used for the painting line itself, since `Line_Speed` is that conveyor's
-    speed and the baths, tunnel and booths it passes through are their own
-    equipment.
-  - The two Shelly 3EM meters have no geometry in the model, so their readings
-    sit on the state of the area their machine is in, as does the paint room
-    climate (`Paint_Room_*`, which has no room of its own in the model).
-  - Unmapped for want of signals: `Press 2`, `Polimerization Tunel`, `Tanks`.
+Where the areas' single station carries the same readings as the area itself
+(welding and both packaging lines), one state is recorded onto both ids, so the
+area card and the machine card show the same figures.
 
-The model's `Press down` / `Press up` animation groups are unused for now.
+Unmapped for want of data: the second welding cell (`Rotary welding table.001`)
+and the welding palletizer, the pre-treatment baths (`Bath 1-3`) and the hanger
+conveyor (`Painting Hooks`) — all left over from the previous site — and every
+Facilities fixture.
+
+There is no broker in this demo. The MQTT client is idle (nothing registers a
+topic, so `World` never connects it) and {@link ImplBuilder.startSimulation}
+generates the whole site in the browser instead, recording onto the world's
+timeline exactly where the broker's messages used to land. Everything
+downstream — entity state, tags, the detail panel, history charts, scrubbing —
+is unchanged.
 */
-
-const SITE = "teijin/leca"
-
-const PHP = `${SITE}/php-1250`
-const PHP_A = `${PHP}/plc-a`
-const PHP_B = `${PHP}/plc-b`
-const PHP_ENERGY = `${PHP}/energy`
-
-const PINTURA = `${SITE}/pintura-classica`
-const PINTURA_PLC = `${PINTURA}/plc`
-const PINTURA_ENERGY = `${PINTURA}/energy`
-
-/** `Movable_Platen_State` is the press cycle phase as an int. */
-const PLATEN_STATES = ["Stopped", "Closing", "Pressing", "Opening"]
-
-/**
- * Painting-line alarm codes. `Alarm_1` is process/mechanical, `Alarm_2` is
- * derived from a bath reading leaving its published Min/Max band, `Alarm_3` is
- * utilities. 0 means no active alarm.
- */
-const ALARM_LABELS: Record<number, string> = {
-    205: "Line jam",
-    402: "Conveyor drive",
-    118: "Hanger",
-    331: "Oven damper",
-    101: "Bath temperature",
-    102: "Bath pressure",
-    103: "Bath pH",
-    510: "Compressed air low",
-    522: "Exhaust fan",
-}
 
 /*
 Value formatting
 */
 
-/** A missing reading (nothing published on that topic yet). */
-const NO_VALUE = "—"
+/** Thousands-separated, so a part counter stays readable as it climbs. */
+const num = (value: number, digits = 0) =>
+    value.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })
 
-const num = (raw: unknown, digits = 1) =>
-    raw === undefined || raw === null ? NO_VALUE : Number(raw).toFixed(digits)
+/*
+Status
+*/
 
-/** Trims trailing zeros, so a configuration limit reads `52` and not `52.0`. */
-const trim = (raw: unknown) => (raw === undefined || raw === null ? NO_VALUE : String(Number(raw)))
+/** The three states every station in the demo reports. */
+export type StationStatus = "running" | "stopped" | "alarm"
 
-const round = (raw: unknown) => Math.round(Number(raw))
+/** The status side of an entity's state, shared by stations and their areas. */
+export interface StatusState extends EntityState {
+    status?: StationStatus
+    /** What tripped, while {@link status} is `alarm`. */
+    alarm?: string
+}
 
-const alarm = (raw: unknown) => {
-    const code = round(raw)
-    if (code === 0) {
-        return "None"
+type EntityHeader = Pick<UiSchema, "status" | "color" | "badges" | "error">
+
+/** Status line, accent color and badges for a reported {@link StationStatus}. */
+function statusHeader(state: StatusState): EntityHeader {
+    switch (state.status) {
+        case "running":
+            return { status: "Running", color: "#22c55e", badges: [{ label: "Running", tone: "positive" }] }
+        case "stopped":
+            return { status: "Stopped", color: "#f59e0b", badges: [{ label: "Stopped", tone: "warning" }] }
+        case "alarm":
+            return {
+                status: "Alarm",
+                color: "#ef4444",
+                badges: [{ label: "Alarm", tone: "critical" }],
+                error: state.alarm ?? "Unknown alarm",
+            }
+        default:
+            return { status: "Offline", color: "#6b7280", badges: [{ label: "Offline", tone: "neutral" }] }
     }
-    return `${ALARM_LABELS[code] ?? "Unknown"} (${code})`
 }
 
-const yesNo = (raw: unknown) => (raw === true ? "Yes" : "No")
+/*
+Stat specs
 
-/** Unwraps a `{value, unit, ts}` payload; tolerates a bare value. */
-const unwrap = (data: unknown) =>
-    data && typeof data === "object" && "value" in data ? (data as { value: unknown }).value : data
+Every entity in this file renders its stats the same way — a tile per state
+field, grouped — so the entity kinds below only differ in the list of specs they
+are built with, rather than in a hand-written `buildUiSchema` each.
+*/
 
-/** A reading shown against the setpoint it is tracking, e.g. `147.2 °C → 148`. */
-const setpointText = (value: unknown, setpoint: unknown, unit: string, digits = 1) => {
-    const reading = `${num(value, digits)} ${unit}`
-    return setpoint === undefined ? reading : `${reading} → ${trim(setpoint)}`
+/** How one field of an entity's state becomes a tile in its detail card. */
+type StatSpec<S> = {
+    group: string
+    name: string
+    icon: StatIcon
+    /** The tile's text and the raw reading behind it, or undefined to hide the tile. */
+    read: (state: S) => { text: string; raw: number | string } | undefined
 }
 
-/** A stat's displayed value paired with the raw (unformatted) reading behind it. */
-function statValue(name: string, icon: StatIcon, value: string, raw: number): UiStatValue
-function statValue(name: string, icon: StatIcon, value: string, raw: string): UiStatValue
-function statValue(name: string, icon: StatIcon, value: string, raw: number | string): UiStatValue {
-    return { name, icon, value, raw } as UiStatValue
+/** A numeric reading, hidden until the field has a value. */
+function numberStat<S>(
+    group: string,
+    name: string,
+    icon: StatIcon,
+    pick: (state: S) => number | undefined,
+    unit = "",
+    digits = 0,
+): StatSpec<S> {
+    return {
+        group,
+        name,
+        icon,
+        read: (state) => {
+            const value = pick(state)
+            if (value === undefined) {
+                return undefined
+            }
+
+            const text = num(value, digits)
+            return { text: unit ? `${text} ${unit}` : text, raw: value }
+        },
+    }
+}
+
+/** A label, verdict or tally: shown as-is, with no chartable number behind it. */
+function textStat<S>(
+    group: string,
+    name: string,
+    icon: StatIcon,
+    pick: (state: S) => string | undefined,
+): StatSpec<S> {
+    return {
+        group,
+        name,
+        icon,
+        read: (state) => {
+            const value = pick(state)
+            return value === undefined ? undefined : { text: value, raw: value }
+        },
+    }
 }
 
 /** Accumulates stats into their display groups in first-seen order. */
@@ -132,275 +173,42 @@ class StatSet {
     }
 }
 
+/** Run a spec list against a state, dropping the specs that have no reading. */
+function buildStats<S>(state: S, specs: StatSpec<S>[]): UiSchema["statGroups"] {
+    const set = new StatSet()
+
+    for (const spec of specs) {
+        const read = spec.read(state)
+        if (read) {
+            set.push(spec.group, { name: spec.name, icon: spec.icon, value: read.text, raw: read.raw } as UiStatValue)
+        }
+    }
+
+    return set.build()
+}
+
 /*
 Entities
 */
 
-export interface MachineState extends EntityState {
-    online?: boolean
-    running?: boolean
-    errored?: boolean
-    errorReason?: string
-}
-
-type MachineHeader = Pick<UiSchema, "status" | "color" | "badges" | "error">
-
 /**
- * A piece of equipment anchored to a floor. Its accent color, status line and
- * badges are all derived from the shared online/running/errored trio via
- * {@link header}; subclasses only need to describe their own stat groups.
+ * A piece of equipment anchored to a floor. Its status line, accent color and
+ * badges come from the shared {@link StationStatus}; its stats come from the
+ * spec list it was built with.
  */
-abstract class Machine<S extends MachineState> extends Entity<TransformNode, S> {
+class Station<S extends StatusState> extends Entity<TransformNode, S> {
     readonly linkOffsetY = -30
     readonly pickPriority = PICK_PRIORITY.EQUIPMENT
 
-    readonly floor: Floor
-
-    constructor(id: string, name: string, node: TransformNode, floor: Floor, world: World, defaultState: S) {
-        super(id, name, node, world, defaultState)
-        this.floor = floor
-    }
-
-    get building(): Building {
-        return this.floor.building
-    }
-
-    protected header(): MachineHeader {
-        const { online, running, errored, errorReason } = this.state
-
-        if (errored) {
-            return {
-                status: "Error",
-                color: "#ef4444",
-                badges: [{ label: "Error", tone: "critical" }],
-                error: errorReason ?? "Unknown error",
-            }
-        }
-
-        if (!online) {
-            return { status: "Offline", color: "#6b7280", badges: [{ label: "Offline", tone: "neutral" }] }
-        }
-
-        return running
-            ? { status: "Running", color: "#22c55e", badges: [{ label: "Running", tone: "positive" }] }
-            : { status: "Idle", color: "#f59e0b", badges: [{ label: "Idle", tone: "warning" }] }
-    }
-}
-
-/**
- * The compression press: `plc-a` — the molding cycle, what is being made and
- * where the platen is — plus `plc-b`, a second PLC on the same machine
- * carrying the heated tooling (four platen zones tracking their recipe
- * setpoints, plus the two mold thermocouples that dip when a cold charge is
- * laid on the open mold).
- */
-export interface PressState extends MachineState {
-    product?: string
-    parts?: number
-    pressure?: number
-    targetPressure?: number
-    platenPosition?: number
-    platenState?: number
-    platenSpeed?: number
-    compressionTime?: number
-    targetTime?: number
-    totalTime?: number
-    remainingTime?: number
-    fixedPlaten1?: number
-    fixedPlaten1Setpoint?: number
-    fixedPlaten2?: number
-    fixedPlaten2Setpoint?: number
-    movablePlaten1?: number
-    movablePlaten1Setpoint?: number
-    movablePlaten2?: number
-    movablePlaten2Setpoint?: number
-    moldCavityTemp?: number
-    moldMaleTemp?: number
-    cycleTime?: number
-}
-
-class PressEntity extends Machine<PressState> {
-    constructor(id: string, name: string, node: TransformNode, floor: Floor, world: World) {
-        super(id, name, node, floor, world, {})
-    }
-
-    buildUiSchema(): UiSchema {
-        const s = this.state
-        const stats = new StatSet()
-
-        if (s.product !== undefined) {
-            stats.push("Production", statValue("Product", "tag", s.product, s.product))
-        }
-        if (s.parts !== undefined) {
-            stats.push("Production", statValue("Parts", "hash", `${round(s.parts)}`, s.parts))
-        }
-        // stats.push("Production", statValue("Pressure", "gauge", setpointText(s.pressure, s.targetPressure, "bar"), s.pressure ?? 0))
-        // stats.push("Production", statValue("Platen", "ruler", `${num(s.platenPosition, 0)} mm`, s.platenPosition ?? 0))
-        // stats.push("Production", statValue("Platen State", "settings", PLATEN_STATES[round(s.platenState)] ?? NO_VALUE, PLATEN_STATES[round(s.platenState)] ?? NO_VALUE))
-        // stats.push("Production", statValue("Platen Speed", "move", `${num(s.platenSpeed, 1)} mm/s`, s.platenSpeed ?? 0))
-        // stats.push("Production", statValue("Compression", "timer", setpointText(s.compressionTime, s.targetTime, "s"), s.compressionTime ?? 0))
-        // stats.push("Production", statValue("Elapsed", "clock", `${num(s.totalTime, 1)} s`, s.totalTime ?? 0))
-        if (s.remainingTime !== undefined) {
-            stats.push("Production", statValue("Remaining", "hourglass", `${num(s.remainingTime, 1)} s`, s.remainingTime))
-        }
-        // stats.push("Production", statValue("Fixed Platen 1", "thermometer", setpointText(s.fixedPlaten1, s.fixedPlaten1Setpoint, "°C"), s.fixedPlaten1 ?? 0))
-        // stats.push("Production", statValue("Fixed Platen 2", "thermometer", setpointText(s.fixedPlaten2, s.fixedPlaten2Setpoint, "°C"), s.fixedPlaten2 ?? 0))
-        // stats.push("Production", statValue("Movable Platen 1", "thermometer", setpointText(s.movablePlaten1, s.movablePlaten1Setpoint, "°C"), s.movablePlaten1 ?? 0))
-        // stats.push("Production", statValue("Movable Platen 2", "thermometer", setpointText(s.movablePlaten2, s.movablePlaten2Setpoint, "°C"), s.movablePlaten2 ?? 0))
-        // stats.push("Production", statValue("Mold Cavity", "thermometer", `${num(s.moldCavityTemp, 1)} °C`, s.moldCavityTemp ?? 0))
-        // stats.push("Production", statValue("Mold Male", "thermometer", `${num(s.moldMaleTemp, 1)} °C`, s.moldMaleTemp ?? 0))
-        if (s.cycleTime !== undefined) {
-            stats.push("Production", statValue("Cycle Time", "timer", `${num(s.cycleTime, 0)} s`, s.cycleTime))
-        }
-
-        return { name: this.name, ...this.header(), statGroups: stats.build() }
-    }
-}
-
-/**
- * The painting line's own signals — the hanger conveyor's speed, the downtime
- * flag and the three alarm words. Anchored to the conveyor, since the baths,
- * tunnel and booths it runs through are equipment in their own right.
- */
-export interface PaintingLineState extends MachineState {
-    lineSpeed?: number
-    downtime?: boolean
-    alarm1?: number
-    alarm2?: number
-    alarm3?: number
-}
-
-class PaintingLineEntity extends Machine<PaintingLineState> {
-    constructor(id: string, name: string, node: TransformNode, floor: Floor, world: World) {
-        super(id, name, node, floor, world, {})
-    }
-
-    buildUiSchema(): UiSchema {
-        const s = this.state
-        const stats = new StatSet()
-
-        if (s.lineSpeed !== undefined) {
-            stats.push("Production", statValue("Line Speed", "move", `${num(s.lineSpeed, 2)} m/min`, s.lineSpeed))
-        }
-        if (s.downtime !== undefined) {
-            stats.push("Production", statValue("Downtime", "ban", yesNo(s.downtime), yesNo(s.downtime)))
-        }
-        if (s.alarm1 !== undefined) {
-            stats.push("Production", statValue("Alarm 1", "siren", alarm(s.alarm1), alarm(s.alarm1)))
-        }
-        if (s.alarm2 !== undefined) {
-            stats.push("Production", statValue("Alarm 2", "siren", alarm(s.alarm2), alarm(s.alarm2)))
-        }
-        if (s.alarm3 !== undefined) {
-            stats.push("Production", statValue("Alarm 3", "siren", alarm(s.alarm3), alarm(s.alarm3)))
-        }
-
-        return { name: this.name, ...this.header(), statGroups: stats.build() }
-    }
-}
-
-/**
- * A pre-treatment bath: temperature and pressure. Bath 1 is the alkaline
- * degrease, so it also carries the pH probe (`hasPh`).
- */
-export interface BathState extends MachineState {
-    temperature?: number
-    pressure?: number
-    ph?: number
-}
-
-class BathEntity extends Machine<BathState> {
-    readonly hasPh: boolean
-
-    constructor(id: string, name: string, node: TransformNode, floor: Floor, world: World, hasPh: boolean) {
-        super(id, name, node, floor, world, {})
-        this.hasPh = hasPh
-    }
-
-    buildUiSchema(): UiSchema {
-        const s = this.state
-        const stats = new StatSet()
-
-        if (s.temperature !== undefined) {
-            stats.push("Environment", statValue("Temperature", "thermometer", `${num(s.temperature, 1)} °C`, s.temperature))
-        }
-        if (s.pressure !== undefined) {
-            stats.push("Environment", statValue("Pressure", "gauge", `${num(s.pressure, 2)} bar`, s.pressure))
-        }
-        if (this.hasPh && s.ph !== undefined) {
-            stats.push("Environment", statValue("pH", "test-tube", num(s.ph, 2), s.ph))
-        }
-
-        return { name: this.name, ...this.header(), statGroups: stats.build() }
-    }
-}
-
-/** A paint booth (`Cabin N` in the model, `Cabin_N_*` on the PLC): climate controlled. */
-export interface BoothState extends MachineState {
-    temperature?: number
-    humidity?: number
-}
-
-class BoothEntity extends Machine<BoothState> {
-    constructor(id: string, name: string, node: TransformNode, floor: Floor, world: World) {
-        super(id, name, node, floor, world, {})
-    }
-
-    buildUiSchema(): UiSchema {
-        const s = this.state
-        const stats = new StatSet()
-
-        if (s.temperature !== undefined) {
-            stats.push("Environment", statValue("Temperature", "thermometer", `${num(s.temperature, 1)} °C`, s.temperature))
-        }
-        if (s.humidity !== undefined) {
-            stats.push("Environment", statValue("Humidity", "droplet", `${num(s.humidity, 1)} %`, s.humidity))
-        }
-
-        return { name: this.name, ...this.header(), statGroups: stats.build() }
-    }
-}
-
-/** The drying tunnel between the baths and the paint booths. */
-export interface DryerState extends MachineState {
-    temperature?: number
-}
-
-class DryerEntity extends Machine<DryerState> {
-    constructor(id: string, name: string, node: TransformNode, floor: Floor, world: World) {
-        super(id, name, node, floor, world, {})
-    }
-
-    buildUiSchema(): UiSchema {
-        const s = this.state
-        const stats = new StatSet()
-
-        if (s.temperature !== undefined) {
-            stats.push("Environment", statValue("Temperature", "flame", `${num(s.temperature, 1)} °C`, s.temperature))
-        }
-
-        return { name: this.name, ...this.header(), statGroups: stats.build() }
-    }
-}
-
-/**
- * A building area. Neither Shelly 3EM meter is modelled, so each machine's
- * power reading sits on the area it stands in; the paint room's climate has
- * nowhere better to live either.
- */
-export interface AreaState extends EntityState {
-    totalPower?: number
-    parts?: number
-    roomTemperature?: number
-    roomHumidity?: number
-}
-
-class AreaEntity extends Area<AreaState> {
-    readonly floor: Floor
-
-    constructor(id: string, name: string, node: AbstractMesh, floor: Floor, world: World, color: Color3) {
-        super(id, name, node, world, color, {})
-        this.floor = floor
+    constructor(
+        id: string,
+        name: string,
+        node: TransformNode,
+        readonly floor: Floor,
+        world: World,
+        private readonly specs: StatSpec<S>[],
+    ) {
+        super(id, name, node, world, {} as S)
     }
 
     get building(): Building {
@@ -408,30 +216,707 @@ class AreaEntity extends Area<AreaState> {
     }
 
     buildUiSchema(): UiSchema {
-        const s = this.state
-        const stats = new StatSet()
+        return {
+            name: this.name,
+            ...statusHeader(this.state),
+            statGroups: buildStats(this.state, this.specs),
+        }
+    }
+}
 
-        if (s.totalPower !== undefined) {
-            stats.push("Power", statValue("Total Power", "zap", `${num(s.totalPower, 1)} kW`, s.totalPower))
-        }
-        if (s.parts !== undefined) {
-            stats.push("Production", statValue("Parts", "hash", `${round(s.parts)}`, s.parts))
-        }
-        if (s.roomTemperature !== undefined) {
-            stats.push("Environment", statValue("Room Temperature", "thermometer", `${num(s.roomTemperature, 1)} °C`, s.roomTemperature))
-        }
-        if (s.roomHumidity !== undefined) {
-            stats.push("Environment", statValue("Room Humidity", "droplet", `${num(s.roomHumidity, 1)} %`, s.roomHumidity))
-        }
+/**
+ * A building area. An area that owns equipment shows the roll-up of its
+ * stations — status, machine tally, totals; one with no data at all
+ * (Facilities) shows a plain `Ok` card. Unlike a station, an area keeps its own
+ * accent color whatever its status, since that color also tints its zone fade.
+ */
+class FactoryArea<S extends StatusState> extends Area<S> {
+    constructor(
+        id: string,
+        name: string,
+        node: AbstractMesh,
+        readonly floor: Floor,
+        world: World,
+        color: Color3,
+        private readonly specs: StatSpec<S>[],
+    ) {
+        super(id, name, node, world, color, {} as S)
+    }
+
+    get building(): Building {
+        return this.floor.building
+    }
+
+    buildUiSchema(): UiSchema {
+        const equipped = this.state.status !== undefined
+        const header = statusHeader(this.state)
 
         return {
             name: this.name,
-            status: "Ok",
+            status: equipped ? header.status : "Ok",
             color: this.color.toHexString(),
-            badges: [],
-            statGroups: stats.build(),
+            badges: equipped ? header.badges : [],
+            error: header.error,
+            statGroups: buildStats(this.state, this.specs),
         }
     }
+}
+
+/*
+State
+
+One state kind per shape of card. Fields are optional by convention — a partial
+update is itself a valid state, which is what lets the timeline fold updates
+together (see `World.recordState`).
+*/
+
+/**
+ * A line with a single station, whose area data and station data are the same
+ * set of readings: welding, bottle packaging and final packaging.
+ * {@link productionRate} is carried in whatever unit that line reports — parts
+ * per hour, except final packaging, which reports units per day.
+ */
+export interface LineState extends StatusState {
+    parts?: number
+    productionRate?: number
+    cycleTime?: number
+    /** Bottle packaging only; the other two lines leave it unset. */
+    conveyorSpeed?: number
+    power?: number
+}
+
+/** One of the two inspection cells. */
+export interface InspectionStationState extends StatusState {
+    inspected?: number
+    cycleTime?: number
+    accepted?: number
+    rejected?: number
+    /** The verdict on the part that just left the cell: `OK` or `NOK`. */
+    lastInspection?: string
+}
+
+/** The inspection line's roll-up of both cells. */
+export interface InspectionAreaState extends StatusState {
+    /** How many cells are not in alarm, e.g. `1/2 OK`. */
+    machines?: string
+    inspected?: number
+    accepted?: number
+    rejected?: number
+    productionRate?: number
+}
+
+/** A UV painting booth. */
+export interface PaintBoothState extends StatusState {
+    parts?: number
+    cycleTime?: number
+    paintFlow?: number
+    paintPressure?: number
+    temperature?: number
+}
+
+/**
+ * A painting-line tunnel — drying or polymerization. Both are continuous, so
+ * {@link residenceTime} (how long a part spends inside) is a process value in
+ * its own right rather than the station's cycle.
+ */
+export interface TunnelState extends StatusState {
+    parts?: number
+    temperature?: number
+    targetTemperature?: number
+    residenceTime?: number
+}
+
+/** The painting line's roll-up of its four stations. */
+export interface PaintingAreaState extends StatusState {
+    parts?: number
+    productionRate?: number
+    power?: number
+    activeAlarms?: number
+}
+
+/** One of the four milling machines. */
+export interface MillingStationState extends StatusState {
+    parts?: number
+    cycleTime?: number
+}
+
+/** The milling line's roll-up of its four machines. */
+export interface MillingAreaState extends StatusState {
+    machines?: string
+    parts?: number
+    productionRate?: number
+    cycleTime?: number
+    power?: number
+}
+
+/** An area with no operational data at all (Facilities). */
+export interface EmptyAreaState extends StatusState {}
+
+/*
+Cards
+
+The documented data set for each area and station, in the order it is displayed.
+*/
+
+const WELDING_STATS: StatSpec<LineState>[] = [
+    numberStat("Production", "Parts Produced", "hash", (s) => s.parts),
+    numberStat("Production", "Production Rate", "activity", (s) => s.productionRate, "u/h"),
+    numberStat("Production", "Cycle Time", "timer", (s) => s.cycleTime, "s", 1),
+    numberStat("Power", "Energy Consumption", "zap", (s) => s.power, "kW", 1),
+]
+
+const BOTTLE_PACKAGING_STATS: StatSpec<LineState>[] = [
+    numberStat("Production", "Bottles Packaged", "package", (s) => s.parts),
+    numberStat("Production", "Production Rate", "activity", (s) => s.productionRate, "u/h"),
+    numberStat("Production", "Cycle Time", "timer", (s) => s.cycleTime, "s", 1),
+    numberStat("Production", "Conveyor Speed", "move", (s) => s.conveyorSpeed, "m/min", 2),
+    numberStat("Power", "Energy Consumption", "zap", (s) => s.power, "kW", 1),
+]
+
+const FINAL_PACKAGING_STATS: StatSpec<LineState>[] = [
+    numberStat("Production", "Packages Produced", "package", (s) => s.parts),
+    numberStat("Production", "Production Rate", "activity", (s) => s.productionRate, "u/day"),
+    numberStat("Production", "Cycle Time", "timer", (s) => s.cycleTime, "s", 1),
+    numberStat("Power", "Energy Consumption", "zap", (s) => s.power, "kW", 1),
+]
+
+const INSPECTION_AREA_STATS: StatSpec<InspectionAreaState>[] = [
+    textStat("Machines", "Machine Statuses", "circle-check", (s) => s.machines),
+    numberStat("Production", "Parts Inspected", "scan-eye", (s) => s.inspected),
+    numberStat("Production", "Production Rate", "activity", (s) => s.productionRate, "u/h"),
+    numberStat("Quality", "Accepted Parts", "circle-check", (s) => s.accepted),
+    numberStat("Quality", "Rejected Parts", "circle-x", (s) => s.rejected),
+]
+
+const INSPECTION_STATION_STATS: StatSpec<InspectionStationState>[] = [
+    numberStat("Production", "Parts Inspected", "scan-eye", (s) => s.inspected),
+    numberStat("Production", "Cycle Time", "timer", (s) => s.cycleTime, "s", 1),
+    numberStat("Quality", "Accepted Parts", "circle-check", (s) => s.accepted),
+    numberStat("Quality", "Rejected Parts", "circle-x", (s) => s.rejected),
+    textStat("Quality", "Last Inspection", "scan-eye", (s) => s.lastInspection),
+]
+
+const PAINTING_AREA_STATS: StatSpec<PaintingAreaState>[] = [
+    numberStat("Production", "Parts Processed", "hash", (s) => s.parts),
+    numberStat("Production", "Production Rate", "activity", (s) => s.productionRate, "u/h"),
+    numberStat("Power", "Energy Consumption", "zap", (s) => s.power, "kW", 1),
+    numberStat("Alarms", "Active Alarms", "siren", (s) => s.activeAlarms),
+]
+
+const PAINT_BOOTH_STATS: StatSpec<PaintBoothState>[] = [
+    numberStat("Production", "Parts Processed", "hash", (s) => s.parts),
+    numberStat("Production", "Cycle Time", "timer", (s) => s.cycleTime, "s", 1),
+    numberStat("Process", "Paint Flow", "spray-can", (s) => s.paintFlow, "L/min", 2),
+    numberStat("Process", "Paint Pressure", "gauge", (s) => s.paintPressure, "bar", 2),
+    numberStat("Process", "Temperature", "thermometer", (s) => s.temperature, "°C", 1),
+]
+
+/** Drying and polymerization differ only in what their residence time is called. */
+const tunnelStats = (timeName: string): StatSpec<TunnelState>[] => [
+    numberStat("Production", "Parts Processed", "hash", (s) => s.parts),
+    numberStat("Process", "Temperature", "thermometer", (s) => s.temperature, "°C", 1),
+    numberStat("Process", "Target Temperature", "thermometer", (s) => s.targetTemperature, "°C"),
+    numberStat("Process", timeName, "hourglass", (s) => s.residenceTime, "min", 1),
+]
+
+const MILLING_AREA_STATS: StatSpec<MillingAreaState>[] = [
+    textStat("Machines", "Machine Statuses", "circle-check", (s) => s.machines),
+    numberStat("Production", "Parts Produced", "hash", (s) => s.parts),
+    numberStat("Production", "Production Rate", "activity", (s) => s.productionRate, "u/day"),
+    numberStat("Production", "Average Cycle Time", "timer", (s) => s.cycleTime, "s", 1),
+    numberStat("Power", "Energy Consumption", "zap", (s) => s.power, "kW", 1),
+]
+
+const MILLING_STATION_STATS: StatSpec<MillingStationState>[] = [
+    numberStat("Production", "Parts Produced", "hash", (s) => s.parts),
+    numberStat("Production", "Cycle Time", "timer", (s) => s.cycleTime, "s", 1),
+]
+
+/*
+Simulation
+
+The site's data, generated in the browser. Every line advances its own stations
+once per {@link TICK_SECONDS} and records their state onto the timeline; nothing
+here touches the scene, so live and scrubbed views stay identical.
+*/
+
+/** Simulated seconds per recorded sample — the rate the broker used to publish at. */
+const TICK_SECONDS = 1
+
+/** Longest step a single tick may take, so a backgrounded tab doesn't jump the site forward. */
+const MAX_TICK_SECONDS = 5
+
+const rand = (min: number, max: number) => min + Math.random() * (max - min)
+
+/** `value` scaled by ±`spread` (a fraction of it), for sensor noise. */
+const jitter = (value: number, spread: number) => value * (1 + rand(-spread, spread))
+
+const chance = (probability: number) => Math.random() < probability
+
+const pickOne = <T,>(values: readonly T[]): T => values[Math.floor(Math.random() * values.length)]!
+
+/** Move `current` a `rate`-per-second fraction of the way towards `target`. */
+const approach = (current: number, target: number, rate: number, dt: number) =>
+    current + (target - current) * Math.min(1, rate * dt)
+
+const sum = (values: number[]) => values.reduce((total, value) => total + value, 0)
+
+const average = (values: number[]) => (values.length === 0 ? 0 : sum(values) / values.length)
+
+const WELDING_ALARMS = ["Torch collision", "Wire feed jam", "Shielding gas flow low", "Rotary table unclamped"]
+const INSPECTION_ALARMS = ["Camera calibration lost", "Part not detected", "Reject bin full"]
+const BOTTLE_ALARMS = ["Bottle jam at infeed", "Gripper vacuum low", "Carton magazine empty"]
+const FINAL_PACKAGING_ALARMS = ["Box pusher stalled", "Pallet not in place", "Label printer error"]
+const PAINTING_ALARMS = ["Paint pressure low", "Nozzle clogged", "Extraction fan fault", "Oven temperature deviation"]
+const MILLING_ALARMS = ["Tool wear limit reached", "Spindle overload", "Coolant pressure low", "Door interlock open"]
+
+/** Share of inspected parts that fail. */
+const REJECT_RATE = 0.045
+
+/** Nominal behaviour of one simulated station. */
+type StationProfile = {
+    /** Seconds per part at nominal speed. */
+    cycleTime: number
+    /** Draw in kW while running and while down. */
+    power?: { running: number; idle: number }
+    /** Chance per second of an unplanned stop. */
+    stopChance?: number
+    /** Chance per second of an alarm. */
+    alarmChance?: number
+    alarms?: readonly string[]
+}
+
+/**
+ * The part of every station that behaves the same: a cycle that completes
+ * parts, the running/stopped/alarm state machine that interrupts it, and the
+ * throughput and power that follow from both. Line-specific readings (paint
+ * pressure, inspection verdicts, tunnel temperatures, ...) are layered on by
+ * the line simulations below.
+ */
+class StationSim {
+    status: StationStatus = "running"
+    alarm?: string
+
+    /** Parts completed since the page was opened. */
+    parts = 0
+
+    /** The cycle currently being run, re-jittered every tick. */
+    cycleTime: number
+
+    /** Instantaneous draw in kW, or 0 for a station with no meter. */
+    power = 0
+
+    /** Seconds accumulated into the part currently being made. */
+    private phase: number
+
+    /** Seconds left before the current stop or alarm clears. */
+    private downtime = 0
+
+    /**
+     * Smoothed throughput in parts per second: the rate the station is
+     * sustaining right now — its cycle while producing, zero while down or
+     * starved — rather than the nominal cycle, so downtime and being starved by
+     * the stage upstream both pull the reported production rate down. Seeded at
+     * the nominal rate so the first cards aren't reading zero.
+     */
+    private throughput: number
+
+    constructor(private readonly profile: StationProfile) {
+        this.cycleTime = profile.cycleTime
+        this.phase = rand(0, profile.cycleTime)
+        this.throughput = 1 / profile.cycleTime
+        this.power = profile.power?.running ?? 0
+    }
+
+    /**
+     * Advance the station by `dt` seconds and return how many parts it
+     * finished. `available` caps completions to what the stage upstream can
+     * feed; the head of a line passes `Infinity` and never starves.
+     */
+    tick(dt: number, available = Infinity): number {
+        this.updateStatus(dt)
+
+        const power = this.profile.power
+        if (power) {
+            this.power = jitter(this.status === "running" ? power.running : power.idle, 0.04)
+        }
+
+        let made = 0
+        let starved = false
+
+        if (this.status === "running") {
+            this.cycleTime = jitter(this.profile.cycleTime, 0.05)
+            this.phase += dt
+
+            while (this.phase >= this.cycleTime && made < available) {
+                this.phase -= this.cycleTime
+                made++
+            }
+
+            // A cycle that ran out but had nothing left to take was starved by
+            // the stage upstream. The part waits in the machine rather than
+            // being dropped, so the stage resumes the moment it is fed again.
+            starved = this.phase >= this.cycleTime
+            this.phase = Math.min(this.phase, this.cycleTime)
+        }
+
+        const producing = this.status === "running" && !starved
+        this.throughput = approach(this.throughput, producing ? 1 / this.cycleTime : 0, 1 / 60, dt)
+
+        this.parts += made
+        return made
+    }
+
+    private updateStatus(dt: number) {
+        if (this.status !== "running") {
+            this.downtime -= dt
+            if (this.downtime <= 0) {
+                this.status = "running"
+                this.alarm = undefined
+            }
+            return
+        }
+
+        if (chance((this.profile.alarmChance ?? 0.0005) * dt)) {
+            this.status = "alarm"
+            this.alarm = pickOne(this.profile.alarms ?? ["Unknown fault"])
+            this.downtime = rand(25, 70)
+            return
+        }
+
+        if (chance((this.profile.stopChance ?? 0.0012) * dt)) {
+            this.status = "stopped"
+            this.downtime = rand(12, 45)
+        }
+    }
+
+    get ratePerHour() {
+        return this.throughput * 3600
+    }
+
+    get ratePerDay() {
+        return this.ratePerHour * 24
+    }
+
+    /** Whether the station counts towards its area's `n/m OK` tally. */
+    get ok() {
+        return this.status !== "alarm"
+    }
+
+    /** The status half of this station's recorded state. */
+    get statusState(): StatusState {
+        return { status: this.status, alarm: this.alarm }
+    }
+}
+
+/** `2/4 OK` — the machine tally the inspection and milling areas display. */
+const okTally = (stations: StationSim[]) => `${stations.filter((s) => s.ok).length}/${stations.length} OK`
+
+/** An area is in alarm if any of its stations is, and running while any of them runs. */
+function rollUpStatus(stations: StationSim[]): StationStatus {
+    if (stations.some((s) => s.status === "alarm")) {
+        return "alarm"
+    }
+    if (stations.some((s) => s.status === "running")) {
+        return "running"
+    }
+    return "stopped"
+}
+
+/** The alarm shown on an area's card: the first one active on the line. */
+const firstAlarm = (stations: StationSim[]) => stations.find((s) => s.status === "alarm")?.alarm
+
+/** One simulated line: advances its stations and records their state each tick. */
+interface LineSim {
+    tick(dt: number): void
+}
+
+/**
+ * A line whose one station *is* the line — welding, bottle packaging and final
+ * packaging. The same state is recorded onto the area and the station, so both
+ * cards read identically, as the documented data set does.
+ */
+class SingleStationLine implements LineSim {
+    private readonly station: StationSim
+
+    constructor(
+        private readonly world: World,
+        private readonly areaId: string,
+        private readonly stationId: string,
+        profile: StationProfile,
+        /** `ratePerDay` reports units/day instead of parts/h; `conveyorSpeed` is the nominal belt speed in m/min. */
+        private readonly options: { ratePerDay?: boolean; conveyorSpeed?: number } = {},
+    ) {
+        this.station = new StationSim(profile)
+    }
+
+    tick(dt: number) {
+        const station = this.station
+        station.tick(dt)
+
+        const running = station.status === "running"
+        const nominalSpeed = this.options.conveyorSpeed
+
+        const state: LineState = {
+            ...station.statusState,
+            parts: station.parts,
+            productionRate: this.options.ratePerDay ? station.ratePerDay : station.ratePerHour,
+            cycleTime: station.cycleTime,
+            power: station.power,
+            conveyorSpeed:
+                nominalSpeed === undefined ? undefined : running ? jitter(nominalSpeed, 0.02) : 0,
+        }
+
+        this.world.recordState(this.areaId, state)
+        this.world.recordState(this.stationId, state)
+    }
+}
+
+/** The two inspection cells, each judging the parts it measures. */
+class InspectionLine implements LineSim {
+    private readonly stations: StationSim[]
+
+    /** Per-cell verdict tally, kept alongside the shared station simulation. */
+    private readonly quality: { accepted: number; rejected: number; last?: string }[]
+
+    constructor(
+        private readonly world: World,
+        private readonly areaId: string,
+        private readonly stationIds: string[],
+    ) {
+        this.stations = stationIds.map(
+            () =>
+                new StationSim({
+                    cycleTime: 18,
+                    power: { running: 4.2, idle: 0.7 },
+                    alarms: INSPECTION_ALARMS,
+                }),
+        )
+        this.quality = stationIds.map(() => ({ accepted: 0, rejected: 0 }))
+    }
+
+    tick(dt: number) {
+        this.stations.forEach((station, index) => {
+            const inspected = station.tick(dt)
+            const quality = this.quality[index]!
+
+            for (let part = 0; part < inspected; part++) {
+                const accepted = !chance(REJECT_RATE)
+                if (accepted) {
+                    quality.accepted++
+                } else {
+                    quality.rejected++
+                }
+                quality.last = accepted ? "OK" : "NOK"
+            }
+
+            const state: InspectionStationState = {
+                ...station.statusState,
+                inspected: station.parts,
+                cycleTime: station.cycleTime,
+                accepted: quality.accepted,
+                rejected: quality.rejected,
+                lastInspection: quality.last,
+            }
+
+            this.world.recordState(this.stationIds[index]!, state)
+        })
+
+        const state: InspectionAreaState = {
+            status: rollUpStatus(this.stations),
+            alarm: firstAlarm(this.stations),
+            machines: okTally(this.stations),
+            inspected: sum(this.stations.map((s) => s.parts)),
+            accepted: sum(this.quality.map((q) => q.accepted)),
+            rejected: sum(this.quality.map((q) => q.rejected)),
+            productionRate: sum(this.stations.map((s) => s.ratePerHour)),
+        }
+
+        this.world.recordState(this.areaId, state)
+    }
+}
+
+/** Ambient the tunnels cool towards once they stop heating. */
+const TUNNEL_COLD = 40
+
+const DRYING_TARGET = 65
+const DRYING_MINUTES = 12
+
+const POLYMERIZATION_TARGET = 180
+const POLYMERIZATION_MINUTES = 25
+
+/**
+ * The painting line: the two UV booths paint in parallel, and what they finish
+ * moves through the drying tunnel and then the polymerization tunnel. Both
+ * tunnels are continuous, so their cycle is the takt of one part passing
+ * through while the residence time is how long it spends inside; their
+ * temperatures climb towards setpoint while heating and fall towards
+ * {@link TUNNEL_COLD} while stopped.
+ */
+class PaintingLine implements LineSim {
+    private readonly booths: StationSim[]
+    private readonly drying = new StationSim({
+        cycleTime: 14,
+        power: { running: 34, idle: 9 },
+        alarms: PAINTING_ALARMS,
+    })
+    private readonly polymerization = new StationSim({
+        cycleTime: 14,
+        power: { running: 52, idle: 14 },
+        alarms: PAINTING_ALARMS,
+    })
+
+    /** Parts finished upstream and not yet taken by the next stage. */
+    private toDry = 0
+    private toPolymerize = 0
+
+    private dryingTemperature = DRYING_TARGET
+    private polymerizationTemperature = POLYMERIZATION_TARGET
+
+    constructor(
+        private readonly world: World,
+        private readonly areaId: string,
+        private readonly boothIds: string[],
+        private readonly dryingId: string,
+        private readonly polymerizationId: string,
+    ) {
+        // Two booths at 36 s each feed the tunnels a part every 18 s, comfortably
+        // inside the 14 s the tunnels take, so the booths set the line's pace.
+        this.booths = boothIds.map(
+            () =>
+                new StationSim({
+                    cycleTime: 36,
+                    power: { running: 18, idle: 3 },
+                    alarms: PAINTING_ALARMS,
+                }),
+        )
+    }
+
+    tick(dt: number) {
+        this.toDry += sum(this.booths.map((booth) => booth.tick(dt)))
+
+        const dried = this.drying.tick(dt, this.toDry)
+        this.toDry -= dried
+        this.toPolymerize += dried
+
+        this.toPolymerize -= this.polymerization.tick(dt, this.toPolymerize)
+
+        this.booths.forEach((booth, index) => {
+            const running = booth.status === "running"
+
+            const state: PaintBoothState = {
+                ...booth.statusState,
+                parts: booth.parts,
+                cycleTime: booth.cycleTime,
+                paintFlow: running ? jitter(0.42, 0.06) : 0,
+                paintPressure: running ? jitter(2.6, 0.04) : jitter(0.25, 0.3),
+                temperature: jitter(23.5, 0.02),
+            }
+
+            this.world.recordState(this.boothIds[index]!, state)
+        })
+
+        this.dryingTemperature = approach(
+            this.dryingTemperature,
+            this.drying.status === "running" ? DRYING_TARGET : TUNNEL_COLD,
+            1 / 90,
+            dt,
+        )
+        this.polymerizationTemperature = approach(
+            this.polymerizationTemperature,
+            this.polymerization.status === "running" ? POLYMERIZATION_TARGET : TUNNEL_COLD,
+            1 / 150,
+            dt,
+        )
+
+        this.world.recordState<TunnelState>(this.dryingId, {
+            ...this.drying.statusState,
+            parts: this.drying.parts,
+            temperature: jitter(this.dryingTemperature, 0.006),
+            targetTemperature: DRYING_TARGET,
+            residenceTime: jitter(DRYING_MINUTES, 0.02),
+        })
+
+        this.world.recordState<TunnelState>(this.polymerizationId, {
+            ...this.polymerization.statusState,
+            parts: this.polymerization.parts,
+            temperature: jitter(this.polymerizationTemperature, 0.004),
+            targetTemperature: POLYMERIZATION_TARGET,
+            residenceTime: jitter(POLYMERIZATION_MINUTES, 0.02),
+        })
+
+        const stations = [...this.booths, this.drying, this.polymerization]
+
+        const state: PaintingAreaState = {
+            status: rollUpStatus(stations),
+            alarm: firstAlarm(stations),
+            parts: this.polymerization.parts,
+            productionRate: this.polymerization.ratePerHour,
+            power: sum(stations.map((s) => s.power)),
+            activeAlarms: stations.filter((s) => s.status === "alarm").length,
+        }
+
+        this.world.recordState(this.areaId, state)
+    }
+}
+
+/** Four independent milling machines, each tended by its own robot. */
+class MillingLine implements LineSim {
+    private readonly stations: StationSim[]
+
+    constructor(
+        private readonly world: World,
+        private readonly areaId: string,
+        private readonly stationIds: string[],
+    ) {
+        this.stations = stationIds.map(
+            () =>
+                new StationSim({
+                    cycleTime: rand(88, 104),
+                    power: { running: 21, idle: 4 },
+                    alarms: MILLING_ALARMS,
+                }),
+        )
+    }
+
+    tick(dt: number) {
+        this.stations.forEach((station, index) => {
+            station.tick(dt)
+
+            this.world.recordState<MillingStationState>(this.stationIds[index]!, {
+                ...station.statusState,
+                parts: station.parts,
+                cycleTime: station.cycleTime,
+            })
+        })
+
+        const state: MillingAreaState = {
+            status: rollUpStatus(this.stations),
+            alarm: firstAlarm(this.stations),
+            machines: okTally(this.stations),
+            parts: sum(this.stations.map((s) => s.parts)),
+            productionRate: sum(this.stations.map((s) => s.ratePerDay)),
+            cycleTime: average(this.stations.map((s) => s.cycleTime)),
+            power: sum(this.stations.map((s) => s.power)),
+        }
+
+        this.world.recordState(this.areaId, state)
+    }
+}
+
+/*
+Areas
+*/
+
+/** One accent color per area, used for its zone fade, tag and stat tiles. */
+const AREA_COLORS = {
+    welding: new Color3(0.23, 0.51, 0.96),
+    inspection: new Color3(0.55, 0.36, 0.96),
+    bottlePackaging: new Color3(0.06, 0.65, 0.91),
+    finalPackaging: new Color3(0.02, 0.71, 0.83),
+    painting: new Color3(0.96, 0.55, 0.19),
+    milling: new Color3(0.34, 0.4, 0.95),
+    facilities: new Color3(0.13, 0.7, 0.47),
 }
 
 /*
@@ -482,154 +967,43 @@ export class ImplBuilder {
     }
 
     /*
-    Telemetry wiring
+    Simulation
     */
 
     /**
-     * Mirror a machine's retained `<machine>/status` message onto an entity. Raw
-     * messages are interpreted into structured state and recorded on the timeline;
-     * the world projects that state back onto the entity, so live and scrubbed
-     * views go through the exact same path.
+     * Drive the line simulations off the scene's clock, one tick per
+     * {@link TICK_SECONDS}. Running on the render loop means the site pauses
+     * with the scene and stops with it, rather than outliving it on a timer.
      */
-    private bindMachineStatus(entity: Entity, statusTopic: string) {
-        const world = entity.world
+    private startSimulation(world: World, lines: LineSim[]) {
+        // A sweep writes ~20 entity states; batching them lands the whole tick
+        // on the timeline as one change instead of twenty.
+        const tick = (dt: number) => {
+            world.recordBatch(() => {
+                for (const line of lines) {
+                    line.tick(dt)
+                }
+            })
+        }
 
-        world.mqtt.register(statusTopic, (data) => {
-            if (typeof data !== "object" || !data) {
+        // Fill the cards immediately instead of showing an empty first second.
+        tick(TICK_SECONDS)
+
+        let elapsed = 0
+
+        const observer = world.scene.onBeforeRenderObservable.add((scene) => {
+            elapsed += scene.getEngine().getDeltaTime() / 1000
+            if (elapsed < TICK_SECONDS) {
                 return
             }
 
-            const online = "online" in data && data.online === true
-            const running = "running" in data && data.running === true
-            const errored = "errored" in data && data.errored === true
-            const errorReason =
-                errored && "errorReason" in data ? (data["errorReason"] as string) : undefined
+            const dt = Math.min(elapsed, MAX_TICK_SECONDS)
+            elapsed = 0
 
-            world.recordState(entity.id, { online, running, errored, errorReason })
-        })
-    }
-
-    /** Mirror a single topic's raw value onto one field of an entity's state. */
-    private bindField(world: World, id: string, topic: string, field: string) {
-        world.mqtt.register(topic, (data) => {
-            world.recordState(id, { [field]: unwrap(data) })
-        })
-    }
-
-    /** Of the Shelly 3EM's 20 signals, only the total active power is of interest here. */
-    private bindEnergy(world: World, id: string, base: string) {
-        this.bindField(world, id, `${base}/Total_Active_Power`, "totalPower")
-    }
-
-    /*
-    Equipment
-    */
-
-    private buildPress(floor: Floor, world: World): PressEntity {
-        const press = new PressEntity("equipment:php-1250", "PHP 1250", this.findNode("Press 1"), floor, world)
-
-        this.bindMachineStatus(press, `${PHP}/status`)
-
-        this.bindField(world, press.id, `${PHP_A}/Product_Description`, "product")
-        this.bindField(world, press.id, `${PHP_A}/Part_Counter`, "parts")
-        this.bindField(world, press.id, `${PHP_A}/Pressure`, "pressure")
-        this.bindField(world, press.id, `${PHP_A}/Target_Pressure`, "targetPressure")
-        this.bindField(world, press.id, `${PHP_A}/Movable_Platen_Position`, "platenPosition")
-        this.bindField(world, press.id, `${PHP_A}/Movable_Platen_State`, "platenState")
-        this.bindField(world, press.id, `${PHP_A}/Speed`, "platenSpeed")
-        this.bindField(world, press.id, `${PHP_A}/Compression_Time`, "compressionTime")
-        this.bindField(world, press.id, `${PHP_A}/Target_Time`, "targetTime")
-        this.bindField(world, press.id, `${PHP_A}/Total_Time`, "totalTime")
-        this.bindField(world, press.id, `${PHP_A}/Remaining_Time`, "remainingTime")
-
-        this.bindField(world, press.id, `${PHP_B}/Fixed_Platen_Temperature_1`, "fixedPlaten1")
-        this.bindField(world, press.id, `${PHP_B}/Fixed_Platen_Temperature_1_Setpoint`, "fixedPlaten1Setpoint")
-        this.bindField(world, press.id, `${PHP_B}/Fixed_Platen_Temperature_2`, "fixedPlaten2")
-        this.bindField(world, press.id, `${PHP_B}/Fixed_Platen_Temperature_2_Setpoint`, "fixedPlaten2Setpoint")
-        this.bindField(world, press.id, `${PHP_B}/Movable_Platen_Temperature_1`, "movablePlaten1")
-        this.bindField(world, press.id, `${PHP_B}/Movable_Platen_Temperature_1_Setpoint`, "movablePlaten1Setpoint")
-        this.bindField(world, press.id, `${PHP_B}/Movable_Platen_Temperature_2`, "movablePlaten2")
-        this.bindField(world, press.id, `${PHP_B}/Movable_Platen_Temperature_2_Setpoint`, "movablePlaten2Setpoint")
-        this.bindField(world, press.id, `${PHP_B}/Mold_Cavity_Temperature`, "moldCavityTemp")
-        this.bindField(world, press.id, `${PHP_B}/Mold_Male_Temperature`, "moldMaleTemp")
-        this.bindField(world, press.id, `${PHP_B}/Theoretical_Cycle_Time`, "cycleTime")
-
-        return press
-    }
-
-    private buildPaintingLine(floor: Floor, world: World): PaintingLineEntity {
-        const line = new PaintingLineEntity(
-            "equipment:pintura-classica",
-            "Pintura Clássica",
-            this.findNode("Painting Hooks"),
-            floor,
-            world,
-        )
-
-        this.bindMachineStatus(line, `${PINTURA}/status`)
-
-        // `Machine_State` and `Downtime` are the two sides of the line running or
-        // not, which the status message above already carries — so the signal
-        // drives `running` rather than a stat of its own, and only the downtime
-        // side is displayed.
-        world.mqtt.register(`${PINTURA_PLC}/Machine_State`, (data) => {
-            world.recordState(line.id, { running: unwrap(data) === true })
+            tick(dt)
         })
 
-        this.bindField(world, line.id, `${PINTURA_PLC}/Line_Speed`, "lineSpeed")
-        this.bindField(world, line.id, `${PINTURA_PLC}/Downtime`, "downtime")
-        this.bindField(world, line.id, `${PINTURA_PLC}/Alarm_1`, "alarm1")
-        this.bindField(world, line.id, `${PINTURA_PLC}/Alarm_2`, "alarm2")
-        this.bindField(world, line.id, `${PINTURA_PLC}/Alarm_3`, "alarm3")
-
-        return line
-    }
-
-    private buildBath(floor: Floor, world: World, index: number, role: string, hasPh: boolean): BathEntity {
-        const bath = new BathEntity(
-            `equipment:bath-${index}`,
-            `Bath ${index} (${role})`,
-            this.findNode(`Bath ${index}`),
-            floor,
-            world,
-            hasPh,
-        )
-
-        this.bindMachineStatus(bath, `${PINTURA}/status`)
-
-        this.bindField(world, bath.id, `${PINTURA_PLC}/Bath_${index}_Temperature`, "temperature")
-        this.bindField(world, bath.id, `${PINTURA_PLC}/Bath_${index}_Pressure`, "pressure")
-        if (hasPh) {
-            this.bindField(world, bath.id, `${PINTURA_PLC}/Bath_${index}_Ph`, "ph")
-        }
-
-        return bath
-    }
-
-    private buildBooth(floor: Floor, world: World, index: number): BoothEntity {
-        const booth = new BoothEntity(
-            `equipment:booth-${index}`,
-            `Paint Booth ${index}`,
-            this.findNode(`Cabin ${index}`),
-            floor,
-            world,
-        )
-
-        this.bindMachineStatus(booth, `${PINTURA}/status`)
-
-        this.bindField(world, booth.id, `${PINTURA_PLC}/Cabin_${index}_Temperature`, "temperature")
-        this.bindField(world, booth.id, `${PINTURA_PLC}/Cabin_${index}_Humidity`, "humidity")
-
-        return booth
-    }
-
-    private buildDryer(floor: Floor, world: World): DryerEntity {
-        const dryer = new DryerEntity("equipment:dryer", "Drying Tunnel", this.findNode("Drying Tunel"), floor, world)
-
-        this.bindMachineStatus(dryer, `${PINTURA}/status`)
-        this.bindField(world, dryer.id, `${PINTURA_PLC}/Dryer_Temperature`, "temperature")
-
-        return dryer
+        world.scene.onDisposeObservable.add(() => observer.remove())
     }
 
     /*
@@ -641,77 +1015,157 @@ export class ImplBuilder {
 
         //
 
-        const building = new Building(world, 'Teijin Leça', buildingRootNode)
+        const building = new Building(world, 'Demo Factory', buildingRootNode)
 
         const floor = building.addFloor("Floor 0", this.findNode('Floor'))
 
-        const areaPainting = new AreaEntity('area:painting', 'Painting', this.findMesh('Area 1 - Painting'), floor, world, new Color3(0.96, 0.55, 0.19))
-        const areaFactory1 = new AreaEntity('area:factory-1', 'Factory 1', this.findMesh('Area 2 - Factory 1'), floor, world, new Color3(0.23, 0.51, 0.96))
-        const areaFactory2 = new AreaEntity('area:factory-2', 'Factory 2', this.findMesh('Area 3 - Factory 2'), floor, world, new Color3(0.34, 0.40, 0.95))
-        const areaFactory3 = new AreaEntity('area:factory-3', 'Factory 3', this.findMesh('Area 4 - Factory 3'), floor, world, new Color3(0.55, 0.36, 0.96))
-        const areaFactory4 = new AreaEntity('area:factory-4', 'Factory 4', this.findMesh('Area 5 - Factory 4'), floor, world, new Color3(0.06, 0.65, 0.91))
-        const areaFactory5 = new AreaEntity('area:factory-5', 'Factory 5', this.findMesh('Area 6 - Factory 5'), floor, world, new Color3(0.02, 0.71, 0.83))
-        const areaFacilities = new AreaEntity('area:facilities', 'Facilities', this.findMesh('Area 7 - Facilities'), floor, world, new Color3(0.13, 0.70, 0.47))
+        const area = <S extends StatusState>(id: string, name: string, mesh: string, color: Color3, specs: StatSpec<S>[]) =>
+            new FactoryArea<S>(`area:${id}`, name, this.findMesh(mesh), floor, world, color, specs)
+
+        const station = <S extends StatusState>(id: string, name: string, node: string, specs: StatSpec<S>[]) =>
+            new Station<S>(`station:${id}`, name, this.findNode(node), floor, world, specs)
 
         /*
-        PHP 1250 — compression molding press, `Press 1` in the Factory 5 hall.
+        Facilities — the offices, canteen and warehouse. No operational data.
         */
 
-        const press = this.buildPress(floor, world)
+        const areaFacilities = area<EmptyAreaState>("facilities", "Facilities", "Facilities", AREA_COLORS.facilities, [])
 
         /*
-        Pintura Clássica — the hanger conveyor through the pre-treatment baths,
-        the drying tunnel and the two paint booths, all in the Painting hall.
+        Welding line — one KUKA cell on the rotary table.
         */
 
-        const line = this.buildPaintingLine(floor, world)
-        const bath1 = this.buildBath(floor, world, 1, "Degrease", true)
-        const bath2 = this.buildBath(floor, world, 2, "Rinse", false)
-        const bath3 = this.buildBath(floor, world, 3, "Conversion", false)
-        const dryer = this.buildDryer(floor, world)
-        const booth1 = this.buildBooth(floor, world, 1)
-        const booth2 = this.buildBooth(floor, world, 2)
+        const areaWelding = area<LineState>("welding", "Welding Line", "Welding line", AREA_COLORS.welding, WELDING_STATS)
+        const welding = station<LineState>("welding", "Welding Station", "Welding station 2", WELDING_STATS)
 
         /*
-        Area state. Neither energy meter is modelled, so each machine's readings
-        sit on the area it stands in; the paint room's climate has nowhere better
-        to live either.
+        Inspection line — two UR5e cells measuring in parallel.
         */
 
-        this.bindEnergy(world, areaFactory5.id, PHP_ENERGY)
-        this.bindField(world, areaFactory5.id, `${PHP_A}/Part_Counter`, "parts")
+        const areaInspection = area<InspectionAreaState>("inspection", "Inspection Line", "Inspection line", AREA_COLORS.inspection, INSPECTION_AREA_STATS)
+        const inspection1 = station<InspectionStationState>("inspection-1", "Inspection Station 1", "Robot structure", INSPECTION_STATION_STATS)
+        const inspection2 = station<InspectionStationState>("inspection-2", "Inspection Station 2", "Robot structure.001", INSPECTION_STATION_STATS)
 
-        this.bindEnergy(world, areaPainting.id, PINTURA_ENERGY)
-        this.bindField(world, areaPainting.id, `${PINTURA_PLC}/Paint_Room_Temperature`, "roomTemperature")
-        this.bindField(world, areaPainting.id, `${PINTURA_PLC}/Paint_Room_Humidity`, "roomHumidity")
+        /*
+        Bottle packaging line — the bottle conveyor, its gantry and the carton
+        conveyors it feeds.
+        */
+
+        const areaBottlePackaging = area<LineState>("bottle-packaging", "Bottle Packaging Line", "Bottle packaging line", AREA_COLORS.bottlePackaging, BOTTLE_PACKAGING_STATS)
+        const bottlePackaging = station<LineState>("bottle-packaging", "Bottle Packaging", "Bottle conveyor:1", BOTTLE_PACKAGING_STATS)
+
+        /*
+        Final packaging line — the SCARA, the palletizing KUKA and the box and
+        part conveyors between them.
+        */
+
+        const areaFinalPackaging = area<LineState>("final-packaging", "Final Packaging Line", "Final Packaging line", AREA_COLORS.finalPackaging, FINAL_PACKAGING_STATS)
+        const finalPackaging = station<LineState>("final-packaging", "Final Packaging", "Line", FINAL_PACKAGING_STATS)
+
+        /*
+        Painting line — two UV booths into the drying and polymerization tunnels.
+        */
+
+        const areaPainting = area<PaintingAreaState>("painting", "Painting Line", "Painting", AREA_COLORS.painting, PAINTING_AREA_STATS)
+        const uvPainting1 = station<PaintBoothState>("uv-painting-1", "UV Painting 1", "Cabin 1", PAINT_BOOTH_STATS)
+        const uvPainting2 = station<PaintBoothState>("uv-painting-2", "UV Painting 2", "Cabin 2", PAINT_BOOTH_STATS)
+        const drying = station<TunnelState>("drying", "Drying", "Drying Tunel", tunnelStats("Drying Time"))
+        const polymerization = station<TunnelState>("polymerization", "Polymerization", "Polimerization Tunel", tunnelStats("Polymerization Time"))
+
+        /*
+        Milling line — four machines, each with its own loading robot.
+        */
+
+        const areaMilling = area<MillingAreaState>("milling", "Milling Line", "Milling line", AREA_COLORS.milling, MILLING_AREA_STATS)
+        const millingStations = ["Machine", "Machine.001", "Machine.002", "Machine.003"].map((node, index) =>
+            station<MillingStationState>(`milling-${index + 1}`, `Milling Station ${index + 1}`, node, MILLING_STATION_STATS),
+        )
 
         /*
 
         */
 
         world.entityGroups.push(new EntityGroup(world, 'Areas', [
-            areaPainting,
-            areaFactory1,
-            areaFactory2,
-            areaFactory3,
-            areaFactory4,
-            areaFactory5,
             areaFacilities,
+            areaWelding,
+            areaInspection,
+            areaBottlePackaging,
+            areaFinalPackaging,
+            areaPainting,
+            areaMilling,
         ]))
 
-        world.entityGroups.push(new EntityGroup(world, 'Molding', [
-            press,
+        world.entityGroups.push(new EntityGroup(world, 'Welding', [
+            welding,
+        ]))
+
+        world.entityGroups.push(new EntityGroup(world, 'Inspection', [
+            inspection1,
+            inspection2,
+        ]))
+
+        world.entityGroups.push(new EntityGroup(world, 'Packaging', [
+            bottlePackaging,
+            finalPackaging,
         ]))
 
         world.entityGroups.push(new EntityGroup(world, 'Painting', [
-            line,
-            bath1,
-            bath2,
-            bath3,
-            dryer,
-            booth1,
-            booth2,
+            uvPainting1,
+            uvPainting2,
+            drying,
+            polymerization,
         ]))
+
+        world.entityGroups.push(new EntityGroup(world, 'Milling', millingStations))
+
+        /*
+        The site's data. No broker in this demo — every line generates its own
+        readings and records them where the MQTT bindings used to.
+        */
+
+        this.startSimulation(world, [
+            new SingleStationLine(world, areaWelding.id, welding.id, {
+                cycleTime: 42,
+                power: { running: 37, idle: 6 },
+                alarms: WELDING_ALARMS,
+            }),
+
+            new InspectionLine(world, areaInspection.id, [inspection1.id, inspection2.id]),
+
+            new SingleStationLine(
+                world,
+                areaBottlePackaging.id,
+                bottlePackaging.id,
+                {
+                    cycleTime: 6,
+                    power: { running: 12.5, idle: 2 },
+                    alarms: BOTTLE_ALARMS,
+                },
+                { conveyorSpeed: 14 },
+            ),
+
+            new SingleStationLine(
+                world,
+                areaFinalPackaging.id,
+                finalPackaging.id,
+                {
+                    cycleTime: 26,
+                    power: { running: 16, idle: 3 },
+                    alarms: FINAL_PACKAGING_ALARMS,
+                },
+                { ratePerDay: true },
+            ),
+
+            new PaintingLine(
+                world,
+                areaPainting.id,
+                [uvPainting1.id, uvPainting2.id],
+                drying.id,
+                polymerization.id,
+            ),
+
+            new MillingLine(world, areaMilling.id, millingStations.map(s => s.id)),
+        ])
 
         return building
     }

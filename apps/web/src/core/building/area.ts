@@ -33,7 +33,12 @@ class AreaFadeFeature<S extends EntityState> implements EntityFeature {
         }
 
         const targetAlpha = this.area.active ? 0.3 : 0
-        this.material.alpha = damp(this.material.alpha, targetAlpha, 0.005, dt)
+        const alpha = damp(this.material.alpha, targetAlpha, 0.005, dt)
+
+        // Snap once imperceptibly close. `damp` only ever approaches its target,
+        // and every write to `alpha` marks the material dirty — without this the
+        // area materials would be re-validated on every frame, forever.
+        this.material.alpha = Math.abs(alpha - targetAlpha) < 0.001 ? targetAlpha : alpha
         this.area.node.isVisible = this.material.alpha > 0.001
     }
 

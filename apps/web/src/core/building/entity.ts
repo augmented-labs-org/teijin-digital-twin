@@ -37,6 +37,20 @@ export abstract class Entity<N extends TransformNode = TransformNode, S extends 
 
     private _state: S
 
+    /**
+     * Bumped on every write to {@link state}. Views compare it against the
+     * version they last rendered instead of rebuilding their content every
+     * frame — see {@link EntityTag}.
+     */
+    private _stateVersion = 0
+
+    /**
+     * Every mesh under {@link node}, cached by {@link attach}. The model is
+     * static, so the subtree is walked once: some of them (the final packaging
+     * cell) are ~200 meshes, far too many to re-walk per frame.
+     */
+    private _meshes: AbstractMesh[] = []
+
     /** Pixels the tag floats above the node's anchor point. */
     abstract readonly linkOffsetY: number
 
@@ -71,6 +85,17 @@ export abstract class Entity<N extends TransformNode = TransformNode, S extends 
 
     set state(val: S) {
         this._state = val
+        this._stateVersion++
+    }
+
+    /** Changes whenever {@link state} is written; see {@link _stateVersion}. */
+    get stateVersion() {
+        return this._stateVersion
+    }
+
+    /** Every mesh under this entity's node (empty until {@link attach}). */
+    get meshes(): readonly AbstractMesh[] {
+        return this._meshes
     }
 
     set focused(val: boolean) {
@@ -83,7 +108,7 @@ export abstract class Entity<N extends TransformNode = TransformNode, S extends 
 
     /** Meshes to highlight in the world's outline layer when this entity is focused or hovered. */
     getOutlineMeshes(): AbstractMesh[] {
-        return this.node instanceof AbstractMesh ? [this.node] : this.node.getChildMeshes()
+        return this._meshes
     }
 
     /*
@@ -98,6 +123,10 @@ export abstract class Entity<N extends TransformNode = TransformNode, S extends 
 
     /** Create the tag and features, and start driving the features per frame. */
     attach(gui: AdvancedDynamicTexture, scene: Scene) {
+        this._meshes = this.node instanceof AbstractMesh
+            ? [this.node, ...this.node.getChildMeshes(false)]
+            : this.node.getChildMeshes(false)
+
         this._tag = new EntityTag(this, gui, scene)
         for (const feature of this.features) {
             feature.attach(scene)
@@ -114,6 +143,7 @@ export abstract class Entity<N extends TransformNode = TransformNode, S extends 
         this._observer = null
         this._tag?.dispose()
         this._tag = undefined
+        this._meshes = []
         for (const feature of this.features) {
             feature.detach()
         }

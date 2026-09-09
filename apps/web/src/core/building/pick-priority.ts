@@ -28,14 +28,15 @@ export function setPickPriority(meshes: Iterable<AbstractMesh>, priority: number
 }
 
 /**
- * Make Babylon resolve picks by priority instead of raw depth, process-wide.
+ * Make Babylon resolve picks by priority instead of raw depth, process-wide,
+ * and resolve them against bounding boxes rather than triangles.
  *
  * This swaps the per-mesh picker Babylon runs inside its single pick pass (used
- * by every pointer down/up/move and by scene.pick), so it costs no extra
- * raycast — it only changes the "is this hit better than the best so far?"
- * test: a higher {@link pickPriorityOf} wins outright, and equal priorities
- * fall back to nearest, i.e. Babylon's original behaviour. Meshes without a
- * priority are all {@link PICK_PRIORITY.NONE}, so unmarked scenes are unchanged.
+ * by every pointer down/up and by scene.pick), so it costs no extra raycast —
+ * it only changes the "is this hit better than the best so far?" test: a higher
+ * {@link pickPriorityOf} wins outright, and equal priorities fall back to
+ * nearest, i.e. Babylon's original behaviour. Meshes without a priority are all
+ * {@link PICK_PRIORITY.NONE}, so unmarked scenes are unchanged.
  *
  * Idempotent; safe to call once at startup.
  */
@@ -46,12 +47,19 @@ export function installPriorityPicking() {
         mesh: AbstractMesh,
         world: Matrix,
         fastCheck?: boolean,
-        onlyBoundingInfo?: boolean,
+        _onlyBoundingInfo?: boolean,
         trianglePredicate?: TrianglePickingPredicate,
         skipBoundingInfo?: boolean,
     ): Nullable<PickingInfo> => {
         const ray = rayFor(world, mesh.enableDistantPicking)
-        const hit = mesh.intersects(ray, fastCheck, trianglePredicate, onlyBoundingInfo, world, skipBoundingInfo)
+
+        // Bounding boxes only, never triangles (the caller's `onlyBoundingInfo`
+        // is overridden). Entities are picked at machine granularity, but the
+        // model is imported CAD: one hovered part can be 70k triangles, and a
+        // triangle-precision pick over an equipment subtree costs milliseconds
+        // per pointer event. Each mesh here is a single small part with a tight
+        // box, so a box-level hit still resolves to the right entity.
+        const hit = mesh.intersects(ray, fastCheck, trianglePredicate, true, world, skipBoundingInfo)
         if (!hit.hit) {
             return null
         }

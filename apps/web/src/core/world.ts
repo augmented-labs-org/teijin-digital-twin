@@ -1,9 +1,9 @@
 import { ImplBuilder } from "@/impl";
-import { ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DefaultRenderingPipeline, DirectionalLight, HemisphericLight, ImageProcessingConfiguration, ImportMeshAsync, KeyboardEventTypes, Observable, Observer, PBRMaterial, PointerEventTypes, Scene, SelectionOutlineLayer, Vector3, type KeyboardInfo } from "@babylonjs/core";
+import { AbstractMesh, ArcRotateCamera, BoundingSphere, Camera, Color3, Color4, DirectionalLight, HemisphericLight, ImageProcessingConfiguration, ImportMeshAsync, ISceneLoaderAsyncResult, KeyboardEventTypes, Material, Observable, Observer, PBRMaterial, PointerEventTypes, Scene, SelectionOutlineLayer, Vector3, type KeyboardInfo, type PointerInfo } from "@babylonjs/core";
 import { AdvancedDynamicTexture, Control, TextBlock } from "@babylonjs/gui";
 import { Building } from "./building/building";
 import { Entity, type EntityState } from "./building/entity";
-import { installPriorityPicking } from "./building/pick-priority";
+import { installPriorityPicking, setPickPriority } from "./building/pick-priority";
 import { DEFAULT_RADIUS, MAP_MODE_RADIUS_RATIO, MapCamera } from "./camera/map-camera";
 import { MqttTelemetry } from "./telemetry/mqtt";
 import { InMemoryTimelineSource, Timeline, type SceneSnapshot, type TimelineChange } from "./telemetry/timeline";
@@ -76,6 +76,8 @@ export class World {
 
     private _onKeyboard?: Observer<KeyboardInfo>
 
+    private _onPointerTap?: Observer<PointerInfo>
+
     private _onFpsUpdate?: Observer<Scene>
 
     private _cameraFocusObserver: Observer<Scene> | null = null
@@ -84,6 +86,14 @@ export class World {
     private _cameraFocusTargetGoal: Vector3 | null = null
     private _cameraFocusRadiusGoal: number | null = null
     private _cameraFocusElapsed = 0
+
+    /**
+     * Matches the canvas fade in `App.tsx`, so the model is only dropped from
+     * the scene once it has faded out of sight rather than blanking mid-fade.
+     */
+    private static readonly MAP_FADE_MS = 700
+
+    private _mapFadeTimer?: number
 
     /** The one shared fullscreen GUI layer. All label features attach controls here. */
     public readonly gui: AdvancedDynamicTexture
@@ -98,6 +108,12 @@ export class World {
 
     /** Every attached entity (areas + custom machine entities); each owns its tag and features. */
     private readonly _entities: Entity[] = []
+
+    /**
+     * Which entity each pickable mesh belongs to, so a pointer tap resolves to
+     * one in a single map lookup. Populated by {@link _registerPickTargets}.
+     */
+    private readonly _entityByMesh = new Map<AbstractMesh, Entity>()
 
     /** Live sensor feed from the Coreflux broker; entities wire their own topic bindings against it. */
     public readonly mqtt = new MqttTelemetry()
@@ -157,8 +173,15 @@ export class World {
         this.hoverOutlineLayer.outlineThickness = 2.0;
         this.hoverOutlineLayer.occlusionStrength = 0;
 
+        // Nothing in the world reacts to hover in 3D (the entity tree panel drives
+        // `hoveredEntity` from React), so the pointer never needs to be resolved
+        // to a mesh on move — only on tap, below. On a model this size a move
+        // pick is far too expensive to run per pointer event.
+        scene.skipPointerMovePicking = true
+
         this._onAfterCameraRender = scene.onAfterRenderCameraObservable.add(this._afterCameraRender)
         this._onKeyboard = scene.onKeyboardObservable.add(this._onKeyboardEvent)
+        this._onPointerTap = scene.onPointerObservable.add(this._onSceneTap, PointerEventTypes.POINTERTAP)
         scene.onDisposeObservable.add(this._dispose)
     }
 
@@ -172,7 +195,10 @@ export class World {
         ground.material = groundMat */
 
         try {
-            const buildingModel = await ImportMeshAsync("/models/teijin3.glb", this.scene)
+            // The optimized build of `demo.glb`, produced by `tools/optimize-model.sh`:
+            // same node names and hierarchy, a third of the triangles and 40%
+            // fewer draw calls. Re-run that script after every Blender re-export.
+            const buildingModel = await ImportMeshAsync("/models/demo.glb", this.scene)
 
             buildingModel.animationGroups.forEach(a => a.stop())
 
@@ -184,6 +210,8 @@ export class World {
 
                 material.emissiveIntensity = Math.min(1, (material.emissiveIntensity - 1) / 10)
             }
+
+            this._freezeStaticScene(buildingModel, materialSet)
 
             const impl = new ImplBuilder(buildingModel)
             const building = impl.build(this)
@@ -201,6 +229,7 @@ export class World {
             for (const entity of entities) {
                 entity.attach(this.gui, this.scene)
                 this._entities.push(entity)
+                this._registerPickTargets(entity)
             }
 
             // Project the timeline's current state onto the entities whenever it
@@ -211,12 +240,88 @@ export class World {
                 this.applySnapshot(this.timeline.currentState(), change.animate)
             })
 
-            this.mqtt.connect()
+            // MQTT is off for the demo factory: `impl.build` above started an
+            // in-browser simulation that records onto the timeline directly, so
+            // there is nothing to subscribe to. `this.mqtt.connect()` no-ops
+            // anyway with no registered topics; re-enable it here once real
+            // topic bindings come back.
         } catch (err) {
             if (!this.scene.isDisposed) {
                 throw err
             }
         }
+    }
+
+    /**
+     * Lock down the imported model. Nothing in the scene moves — its animation
+     * groups are stopped above — so there is no reason for Babylon to recompute
+     * thousands of world matrices, re-sync every bounding box and re-validate
+     * every material on each frame. Picking is switched off wholesale too;
+     * {@link _registerPickTargets} turns it back on for the entity subtrees,
+     * which are the only meshes a click should ever resolve to.
+     *
+     * Freezing a world matrix also freezes anything animating that node: if the
+     * model's animation groups are ever played, the nodes they drive need
+     * `unfreezeWorldMatrix()` (and `doNotSyncBoundingInfo = false`) first.
+     */
+    private _freezeStaticScene(model: ISceneLoaderAsyncResult, materials: Iterable<Material>) {
+        for (const mesh of model.meshes) {
+            mesh.isPickable = false
+            // Computes the world matrix (and syncs bounding info) once, then pins it.
+            mesh.freezeWorldMatrix()
+            mesh.doNotSyncBoundingInfo = true
+        }
+
+        for (const node of model.transformNodes) {
+            node.freezeWorldMatrix()
+        }
+
+        // `freeze` re-validates each material once, then stops re-checking it
+        // every frame. Only the model's own materials: an area's fade material
+        // is created later and animates its alpha.
+        for (const material of materials) {
+            material.freeze()
+        }
+    }
+
+    /**
+     * Make an entity's meshes the pick targets that resolve back to it, at its
+     * own {@link Entity.pickPriority}. Each mesh starts unpickable (see
+     * {@link _freezeStaticScene}); the entity's tag flips them on once it is
+     * visible, and off again when its floor is hidden or its group turned off.
+     */
+    private _registerPickTargets(entity: Entity) {
+        setPickPriority(entity.meshes, entity.pickPriority)
+
+        for (const mesh of entity.meshes) {
+            this._entityByMesh.set(mesh, entity)
+        }
+    }
+
+    /**
+     * A tap on an entity's mesh toggles its focus. One scene-level handler
+     * replaces the `ActionManager` the tags used to install on every equipment
+     * mesh: Babylon's pointer-move predicate accepts any mesh carrying one, so
+     * a few hundred of them meant a full scene pick on every pointer move.
+     * With none registered, picking only happens here — and the GUI's
+     * `skipPointerUpPicking` still suppresses it when a control was pressed,
+     * since this reads the pick Babylon already resolved for the tap.
+     */
+    private _onSceneTap = (info: PointerInfo) => {
+        const mesh = info.pickInfo?.pickedMesh
+        if (!mesh) {
+            return
+        }
+
+        const entity = this._entityByMesh.get(mesh)
+        if (entity) {
+            this.toggleEntityFocus(entity)
+        }
+    }
+
+    /** Focus `entity`, or clear the focus if it already holds it. */
+    toggleEntityFocus(entity: Entity) {
+        this.focusedEntity = this.focusedEntity === entity ? undefined : entity
     }
 
     private initGui() {
@@ -267,7 +372,20 @@ export class World {
         fpsText.isPointerBlocker = false
         this.gui.addControl(fpsText)
 
+        // Throttled, because a dirty control makes the GUI layer re-rasterize and
+        // re-upload the screen region covering every visible tag. Written every
+        // frame, this read-out alone guaranteed that happened on every frame,
+        // camera moving or not. Four times a second is plenty for a debug HUD.
+        const FPS_REFRESH_MS = 250
+        let lastFpsRefresh = 0
+
         this._onFpsUpdate = this.scene.onBeforeRenderObservable.add(() => {
+            const now = performance.now()
+            if (now - lastFpsRefresh < FPS_REFRESH_MS) {
+                return
+            }
+
+            lastFpsRefresh = now
             fpsText.text = `${this.scene.getEngine().getFps().toFixed(0)} FPS`
         })
     }
@@ -288,16 +406,21 @@ export class World {
         this._onAfterCameraRender = undefined
         this._onKeyboard?.remove()
         this._onKeyboard = undefined
+        this._onPointerTap?.remove()
+        this._onPointerTap = undefined
         this._onFpsUpdate?.remove()
         this._onFpsUpdate = undefined
         this._cameraFocusObserver?.remove()
         this._cameraFocusObserver = null
+        clearTimeout(this._mapFadeTimer)
+        this._mapFadeTimer = undefined
         this._timelineObserver?.remove()
         this._timelineObserver = undefined
         this.timeline.dispose()
         this.mqtt.dispose()
         this._entities.forEach(entity => entity.dispose())
         this._entities.length = 0
+        this._entityByMesh.clear()
         this.gui.dispose()
         this.outlineLayer.dispose()
         this.hoverOutlineLayer.dispose()
@@ -317,6 +440,16 @@ export class World {
      */
     recordState<S extends EntityState = EntityState>(key: string, partial: S) {
         this._timelineSource.record(key, partial, Date.now())
+    }
+
+    /**
+     * Coalesce every {@link recordState} made by `write` into a single timeline
+     * change. A simulation sweep (or one message carrying a whole site) touches
+     * a couple of dozen entities, and each change re-projects the scene and
+     * wakes the React overlay — so a sweep should land as one update.
+     */
+    recordBatch(write: () => void) {
+        this._timelineSource.batch(write)
     }
 
     /**
@@ -434,11 +567,11 @@ export class World {
     private _syncOutlineSelection() {
         this.outlineLayer.clearSelection()
         this.hoverOutlineLayer.clearSelection()
-        
+
         if (this._hoveredEntity) {
             this.hoverOutlineLayer.addSelection(this._hoveredEntity.getOutlineMeshes())
         }
-        
+
         if (this._focusedEntity && this._focusedEntity !== this._hoveredEntity) {
             this.outlineLayer.addSelection(this._focusedEntity.getOutlineMeshes())
         }
@@ -454,7 +587,28 @@ export class World {
         }
 
         this._mapMode = next
+
+        // The world map is an HTML layer over a canvas that is only faded out,
+        // so the scene would otherwise keep drawing the entire factory behind
+        // it, every frame, for nothing. Dropping the model's root skips it
+        // wholesale; the floor visibility flags below it are left as they are.
+        // Entering waits out the fade, leaving is immediate.
+        clearTimeout(this._mapFadeTimer)
+        this._mapFadeTimer = undefined
+
+        if (next) {
+            this._mapFadeTimer = window.setTimeout(() => this._setModelEnabled(false), World.MAP_FADE_MS)
+        } else {
+            this._setModelEnabled(true)
+        }
+
         this.onMapModeChanged.notifyObservers(next)
+    }
+
+    private _setModelEnabled(enabled: boolean) {
+        for (const building of this.buildings) {
+            building.rootNode.setEnabled(enabled)
+        }
     }
 
     /**

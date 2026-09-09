@@ -6,6 +6,7 @@ import { useTimeline } from "@/hooks/use-timeline"
 import { useWorld } from "@/hooks/use-world"
 import { Card, CardContent, CardHeader } from "@workspace/ui/components/card"
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@workspace/ui/components/chart"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@workspace/ui/components/tabs"
 import { memo, useEffect, useMemo, useState } from "react"
 import { CartesianGrid, Line, LineChart, ReferenceLine, XAxis, YAxis } from "recharts"
 
@@ -140,6 +141,27 @@ function buildStatHistories(entity: Entity, history: Sample[]): Map<string, { t:
 /** Shared reference for stats with no history yet, so {@link StatCard}'s memo sees a stable `data` prop. */
 const EMPTY_HISTORY: { t: number; value: number }[] = []
 
+/** One stat's live reading, with no history chart — used by the "Current Data" tab. */
+function CurrentStatTile({ stat, color }: { stat: UiStatValue; color: string }) {
+    return (
+        <div
+            className="flex items-center gap-3 rounded-2xl p-3"
+            style={{ backgroundColor: hexToRgba(color, 0.07) }}
+        >
+            <span
+                className="flex size-8 shrink-0 items-center justify-center rounded-md"
+                style={{ backgroundColor: hexToRgba(color, 0.12) }}
+            >
+                <img src={statIconDataUri(stat.icon, color)} alt="" className="size-4" />
+            </span>
+            <div className="flex min-w-0 flex-col">
+                <span className="truncate text-xs text-muted-foreground">{stat.name}</span>
+                <span className="text-sm font-semibold text-foreground">{stat.value}</span>
+            </div>
+        </div>
+    )
+}
+
 const EntityDetailBody = memo(function EntityDetailBody({
     entity,
     history,
@@ -156,7 +178,7 @@ const EntityDetailBody = memo(function EntityDetailBody({
 
     return (
         <>
-            <div className="flex flex-col gap-1.5 p-6 pr-14">
+            <div className="flex flex-col gap-1.5 p-6">
                 <div className="flex items-center gap-2">
                     <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />
                     <h2 className="font-heading text-base font-medium text-foreground">{schema.name}</h2>
@@ -180,31 +202,57 @@ const EntityDetailBody = memo(function EntityDetailBody({
                 )}
             </div>
 
-            <div className="flex-1 overflow-y-auto px-6 pb-6">
+            <div className="flex flex-1 flex-col overflow-y-auto px-6 pb-6">
                 {schema.error && (
                     <p className="mb-4 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{schema.error}</p>
                 )}
 
-                {schema.statGroups.map(({ group, stats }) => (
-                    <div key={group ?? "_"} className="mb-4 flex flex-col gap-2">
-                        {schema.statGroups.length > 1 && group && (
-                            <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                                {group}
-                            </span>
-                        )}
-                        <div className="flex flex-col gap-2">
-                            {stats.map((stat) => (
-                                <StatCard
-                                    key={stat.name}
-                                    stat={stat}
-                                    data={histories.get(stat.name) ?? EMPTY_HISTORY}
-                                    color={color}
-                                    currentTime={markTime}
-                                />
-                            ))}
-                        </div>
-                    </div>
-                ))}
+                <Tabs defaultValue="current" className="flex-1">
+                    <TabsList className="w-full">
+                        <TabsTrigger value="current">Current Data</TabsTrigger>
+                        <TabsTrigger value="historical">Historical Data</TabsTrigger>
+                    </TabsList>
+
+                    <TabsContent value="current" className="pt-2">
+                        {schema.statGroups.map(({ group, stats }) => (
+                            <div key={group ?? "_"} className="mb-4 flex flex-col gap-2">
+                                {schema.statGroups.length > 1 && group && (
+                                    <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                                        {group}
+                                    </span>
+                                )}
+                                <div className="flex flex-col gap-2">
+                                    {stats.map((stat) => (
+                                        <CurrentStatTile key={stat.name} stat={stat} color={color} />
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                    </TabsContent>
+
+                    <TabsContent value="historical" className="pt-2">
+                        {schema.statGroups.map(({ group, stats }) => (
+                            <div key={group ?? "_"} className="mb-4 flex flex-col gap-2">
+                                {schema.statGroups.length > 1 && group && (
+                                    <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                                        {group}
+                                    </span>
+                                )}
+                                <div className="flex flex-col gap-2">
+                                    {stats.map((stat) => (
+                                        <StatCard
+                                            key={stat.name}
+                                            stat={stat}
+                                            data={histories.get(stat.name) ?? EMPTY_HISTORY}
+                                            color={color}
+                                            currentTime={markTime}
+                                        />
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                    </TabsContent>
+                </Tabs>
             </div>
         </>
     )
@@ -235,8 +283,8 @@ export function EntityDetailPanel({ entity }: { entity: Entity | undefined }) {
         if (!world || !entity) {
             return
         }
-        const observer = world.timeline.source.onChanged.add(({ key }) => {
-            if (key === entity.id) {
+        const observer = world.timeline.source.onChanged.add(({ keys }) => {
+            if (keys.includes(entity.id)) {
                 forceUpdate((n) => n + 1)
             }
         })

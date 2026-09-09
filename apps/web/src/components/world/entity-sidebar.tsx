@@ -1,85 +1,106 @@
 import { EntityDetailPanel } from "@/components/world/entity-detail-panel"
-import { EntityTreePanel } from "@/components/world/entity-tree-panel"
+import type { Entity } from "@/core/building/entity"
 import { useFocusedEntity } from "@/hooks/use-focused-entity"
+import { useWorld } from "@/hooks/use-world"
 import { Button } from "@workspace/ui/components/button"
-import { InfoIcon, ListTreeIcon, XIcon } from "lucide-react"
+import { Card, CardContent, CardHeader, CardTitle } from "@workspace/ui/components/card"
+import { cn } from "@workspace/ui/lib/utils"
+import { XIcon } from "lucide-react"
 import { AnimatePresence, motion } from "motion/react"
-import { useState } from "react"
+import { useEffect } from "react"
 
-type PanelKey = "details" | "tree"
-
-const RAIL_WIDTH = "3.5rem"
+function AreaRow({ entity, focused }: { entity: Entity; focused: boolean }) {
+    return (
+        <button
+            type="button"
+            onClick={() => {
+                entity.world.focusedEntity = entity
+            }}
+            onMouseEnter={() => {
+                entity.world.hoveredEntity = entity
+            }}
+            onMouseLeave={() => {
+                if (entity.world.hoveredEntity === entity) {
+                    entity.world.hoveredEntity = undefined
+                }
+            }}
+            className={cn(
+                "rounded-md px-2 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-muted",
+                focused && "bg-muted font-medium",
+            )}
+        >
+            {entity.name}
+        </button>
+    )
+}
 
 /**
- * The world's persistent icon rail plus the sheet it expands into. Unlike the
- * old `EntityDetailSheet`, whether the sheet is open (and which panel it shows)
- * is owned entirely by this component's own state — Babylon only ever reports
- * which entity is focused via {@link useFocusedEntity}, it has no say in
- * whether any panel is open.
+ * The world's left-hand "Areas" card and the right-hand "Entity Details" card
+ * shown for whichever entity is currently focused. Babylon only ever reports
+ * which entity is focused via {@link useFocusedEntity} — closing the details
+ * card clears that focus rather than owning any separate open/closed state.
  */
 export function EntitySidebar() {
-    const [activePanel, setActivePanel] = useState<PanelKey | null>(null)
+    const world = useWorld((s) => s.world)
     const focused = useFocusedEntity()
+    const areas = world?.entityGroups.find((group) => group.name === "Areas")?.entities ?? []
 
-    const toggle = (panel: PanelKey) => {
-        setActivePanel((current) => (current === panel ? null : panel))
-    }
+    // Clear the hover outline if the world changes mid-hover, since a row's
+    // onMouseLeave won't fire once it's unmounted.
+    useEffect(() => {
+        return () => {
+            if (world) {
+                world.hoveredEntity = undefined
+            }
+        }
+    }, [world])
 
     return (
         <>
-            <AnimatePresence>
-                {activePanel !== null && (
-                    <motion.div
-                        key="entity-sidebar-panel"
-                        initial={{ x: "-100%" }}
-                        animate={{ x: 0 }}
-                        exit={{ x: "-100%" }}
-                        transition={{ type: "spring", stiffness: 320, damping: 32 }}
-                        style={{ left: RAIL_WIDTH }}
-                        className="fixed inset-y-0 z-40 flex w-full flex-col border-r bg-popover bg-clip-padding text-sm text-popover-foreground shadow-xl sm:max-w-md"
-                    >
-                        <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            className="absolute top-4 right-4 bg-secondary"
-                            onClick={() => setActivePanel(null)}
-                        >
-                            <XIcon />
-                            <span className="sr-only">Close</span>
-                        </Button>
+            <Card className="fixed top-4 bottom-4 left-4 z-40 flex w-64 flex-col">
+                <CardHeader>
+                    <CardTitle>Areas</CardTitle>
+                </CardHeader>
+                <CardContent className="flex flex-1 flex-col gap-0.5 overflow-y-auto">
+                    {areas.map((entity) => (
+                        <AreaRow key={entity.id} entity={entity} focused={focused === entity} />
+                    ))}
+                </CardContent>
+            </Card>
 
-                        {activePanel === "details" ? (
-                            <EntityDetailPanel entity={focused} />
-                        ) : (
-                            <EntityTreePanel />
-                        )}
+            <AnimatePresence>
+                {focused && (
+                    <motion.div
+                        key="entity-details-panel"
+                        initial={{ opacity: 0, x: 16 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: 16 }}
+                        transition={{ type: "spring", stiffness: 320, damping: 32 }}
+                        className="fixed top-4 right-4 bottom-4 z-40 flex w-full max-w-sm flex-col"
+                    >
+                        <Card className="flex flex-1 flex-col overflow-hidden">
+                            <CardHeader className="flex flex-row items-center justify-between">
+                                <CardTitle>Entity Details</CardTitle>
+                                <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    onClick={() => {
+                                        if (world) {
+                                            world.focusedEntity = undefined
+                                        }
+                                    }}
+                                >
+                                    <XIcon />
+                                    <span className="sr-only">Close</span>
+                                </Button>
+                            </CardHeader>
+                            <CardContent className="flex flex-1 flex-col overflow-hidden p-0">
+                                <EntityDetailPanel entity={focused} />
+                            </CardContent>
+                        </Card>
                     </motion.div>
                 )}
             </AnimatePresence>
-
-            <div
-                style={{ width: RAIL_WIDTH }}
-                className="fixed inset-y-0 left-0 z-50 flex flex-col items-center gap-2 border-r bg-popover bg-clip-padding py-4"
-            >
-                <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-expanded={activePanel === "details"}
-                    aria-label="Entity details"
-                    onClick={() => toggle("details")}
-                >
-                    <InfoIcon />
-                </Button>
-                <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-expanded={activePanel === "tree"}
-                    aria-label="Entity tree"
-                    onClick={() => toggle("tree")}
-                >
-                    <ListTreeIcon />
-                </Button>
-            </div>
         </>
     )
 }

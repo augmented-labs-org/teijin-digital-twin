@@ -10,8 +10,12 @@ export type SceneSnapshot = Record<string, EntityState>
 
 type TimeRange = { start: number; end: number }
 
-/** Which entity's state changed, passed to {@link TimelineSource.onChanged} observers. */
-export type TimelineSourceChange = { key: string }
+/**
+ * Which entities' state changed, passed to {@link TimelineSource.onChanged}
+ * observers. A batched record (see {@link InMemoryTimelineSource.batch}) reports
+ * every key it wrote in one notification.
+ */
+export type TimelineSourceChange = { keys: string[] }
 
 /**
  * Where timeline history comes from. Today it is recorded in-memory
@@ -75,6 +79,34 @@ export class InMemoryTimelineSource implements TimelineSource {
     private _start?: number
     private _end?: number
 
+    /** Depth of nested {@link batch} calls; while > 0, notifications are deferred. */
+    private _batchDepth = 0
+
+    /** Keys recorded so far inside the open batch. */
+    private _batchedKeys: string[] = []
+
+    /**
+     * Coalesce every {@link record} made by `write` into a single change
+     * notification. A simulation sweep (or one broker message carrying a whole
+     * site) records a couple of dozen entities at once, and each notification
+     * re-projects the entire scene and wakes the React overlay — so a sweep
+     * should land as one update, not one per entity.
+     */
+    batch(write: () => void) {
+        this._batchDepth++
+        try {
+            write()
+        } finally {
+            this._batchDepth--
+
+            if (this._batchDepth === 0 && this._batchedKeys.length > 0) {
+                const keys = this._batchedKeys
+                this._batchedKeys = []
+                this.onChanged.notifyObservers({ keys })
+            }
+        }
+    }
+
     range(): TimeRange | null {
         return this._start === undefined || this._end === undefined
             ? null
@@ -101,7 +133,11 @@ export class InMemoryTimelineSource implements TimelineSource {
         this._start = this._start === undefined ? t : Math.min(this._start, t)
         this._end = this._end === undefined ? t : Math.max(this._end, t)
 
-        this.onChanged.notifyObservers({ key })
+        if (this._batchDepth > 0) {
+            this._batchedKeys.push(key)
+        } else {
+            this.onChanged.notifyObservers({ keys: [key] })
+        }
     }
 
     stateAt(t: number): SceneSnapshot {
