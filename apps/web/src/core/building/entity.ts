@@ -1,6 +1,7 @@
 import { AbstractMesh, Observer, Scene, TransformNode } from "@babylonjs/core";
 import { AdvancedDynamicTexture } from "@babylonjs/gui";
 import type { World } from "../world";
+import type { Area } from "./area";
 import type { Building } from "./building";
 import { EntityTag } from "./tag";
 import { type UiSchema } from "./ui-schema";
@@ -61,16 +62,34 @@ export abstract class Entity<N extends TransformNode = TransformNode, S extends 
 
     private _observer: Observer<Scene> | null = null
 
-    constructor(id: string, name: string, node: N, world: World, defaultState: S) {
+    /**
+     * The area this entity belongs to. Undefined for an {@link Area} itself,
+     * which is a place rather than something placed in one; every other
+     * entity is always inside exactly one area.
+     */
+    readonly area?: Area<any>
+
+    constructor(id: string, name: string, node: N, world: World, defaultState: S, area?: Area<any>) {
         this.id = id
         this.name = name
         this.node = node
         this.world = world
         this._state = defaultState
+        this.area = area
     }
 
-    get active() {
-        return !!this.world.entityGroups.find(g => g.active && g.entities.includes(this))
+    /**
+     * An area is always active. Anything else is only active — pickable and
+     * tagged — while its area is selected: the area itself is focused, or
+     * another entity in the same area is.
+     */
+    get active(): boolean {
+        if (!this.area) {
+            return true
+        }
+
+        const focused = this.world.focusedEntity
+        return !!focused && (focused === this.area || focused.area === this.area)
     }
 
     /**

@@ -3,8 +3,6 @@ import { useWorld } from "@/hooks/use-world";
 import { EntitySidebar } from "@/components/world/entity-sidebar";
 import { TimelineOverlay } from "@/components/world/timeline-overlay";
 import { LayerSlider } from "@workspace/ui/components/layer-slider";
-import { Toggle, } from "@workspace/ui/components/toggle";
-import { Grid2x2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 
@@ -12,34 +10,6 @@ const variants = {
     visible: { opacity: 1, y: 0, x: 0 },
     hiddenTop: { opacity: 0, y: -10 },
     hiddenRight: { opacity: 0, x: 10 },
-}
-
-/*
-
-*/
-
-function EntityGroupsOverlay() {
-    const world = useWorld((s) => s.world)
-
-    const entityGroups = useSelection(store => store.entityGroups)
-
-    if (!world) {
-        return null
-    }
-
-    return world.entityGroups.map(x => (<Toggle
-        key={x.name}
-        variant="outline"
-        aria-label={`Toggle ${x.name}`}
-        pressed={entityGroups.has(x)}
-        onPressedChange={(p) => {
-            console.log(p)
-            x.active = p
-        }}
-    >
-        <Grid2x2 />
-        {x.name}
-    </Toggle>))
 }
 
 /*
@@ -107,12 +77,6 @@ export function WorldOverlay() {
                 </div>
             </div>
         </div>
-
-        {world && <div className="absolute bottom-20 left-1/2 transform -translate-x-1/2 p-4">
-            <div className="flex flex-row gap-4">
-                <EntityGroupsOverlay />
-            </div>
-        </div>}
 
         {world && <TimelineOverlay />}
         {world && <EntitySidebar />}

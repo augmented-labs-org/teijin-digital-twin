@@ -8,44 +8,14 @@ import { DEFAULT_RADIUS, MAP_MODE_RADIUS_RATIO, MapCamera } from "./camera/map-c
 import { MqttTelemetry } from "./telemetry/mqtt";
 import { InMemoryTimelineSource, Timeline, type SceneSnapshot, type TimelineChange } from "./telemetry/timeline";
 
-export class EntityGroup {
-    readonly world: World
-    readonly name: string
-    readonly entities: Entity[]
-
-    private _active = false
-
-    constructor(world: World, name: string, entities: Entity[]) {
-        this.world = world
-        this.name = name
-        this.entities = entities
-    }
-
-    get active() {
-        return this._active
-    }
-
-    set active(val: boolean) {
-        if (val === this._active) {
-            return
-        }
-
-        if (!this.active && this.world.focusedEntity && this.entities.includes(this.world.focusedEntity)) {
-            this.world.focusedEntity = undefined
-        }
-
-        this._active = val
-        this.world.onEntityGroupActiveChanged.notifyObservers(this)
-    }
-}
-
 export class World {
 
     public scene: Scene
 
     public buildings: Building[] = []
 
-    public entityGroups: EntityGroup[] = []
+    /** Every entity in the world (areas + machine entities), populated by the impl builder before {@link load} attaches them. */
+    public entities: Entity[] = []
 
     /*
 
@@ -60,8 +30,6 @@ export class World {
     public readonly onFocusEntityChanged = new Observable<Entity | undefined>()
 
     private _hoveredEntity: Entity | undefined = undefined
-
-    public readonly onEntityGroupActiveChanged = new Observable<EntityGroup>()
 
     /** Whether the camera is zoomed out far enough that the world map should take over. */
     private _mapMode = false
@@ -221,12 +189,11 @@ export class World {
             this.buildings.push(building)
 
             // Every entity (areas + custom machine entities) is collected into
-            // `entityGroups` by `impl.build` above. Attach each one: it builds its
+            // `entities` by `impl.build` above. Attach each one: it builds its
             // own tag and render features (an area's zone fade, ...) and
             // self-manages them, and wires its own mqtt topic bindings during
             // `impl.build` — there is no generic topic-subscription pass here.
-            const entities = new Set(this.entityGroups.flatMap(g => g.entities))
-            for (const entity of entities) {
+            for (const entity of this.entities) {
                 entity.attach(this.gui, this.scene)
                 this._entities.push(entity)
                 this._registerPickTargets(entity)
@@ -288,7 +255,7 @@ export class World {
      * Make an entity's meshes the pick targets that resolve back to it, at its
      * own {@link Entity.pickPriority}. Each mesh starts unpickable (see
      * {@link _freezeStaticScene}); the entity's tag flips them on once it is
-     * visible, and off again when its floor is hidden or its group turned off.
+     * visible, and off again when its floor is hidden or its area deselected.
      */
     private _registerPickTargets(entity: Entity) {
         setPickPriority(entity.meshes, entity.pickPriority)

@@ -11,29 +11,25 @@ export function useWorldStoreSync() {
     const world = useWorld((s) => s.world)
 
     useEffect(() => {
-        const { selectBuilding, setEntityGroups, selectEntityGroup } = useSelection.getState()
+        const { selectBuilding } = useSelection.getState()
 
         if (!world) {
             selectBuilding(undefined)
-            setEntityGroups(new Set())
 
             return
         }
 
         // Seed the store with whatever is currently focused, then keep it in sync.
         selectBuilding(world.focusedBuilding)
-        setEntityGroups(new Set(world.entityGroups.filter(x => x.active)))
 
         const observers = [
             world.onFocusBuildingChanged.add((building) => selectBuilding(building)),
-            world.onEntityGroupActiveChanged.add((group) => selectEntityGroup(group, group.active))
         ]
 
         return () => {
             observers.forEach(o => o.remove())
 
             selectBuilding(undefined)
-            setEntityGroups(new Set())
         }
     }, [world])
 }

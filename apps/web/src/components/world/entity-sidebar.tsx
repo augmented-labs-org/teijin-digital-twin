@@ -1,4 +1,5 @@
 import { EntityDetailPanel } from "@/components/world/entity-detail-panel"
+import { Area } from "@/core/building/area"
 import type { Entity } from "@/core/building/entity"
 import { useFocusedEntity } from "@/hooks/use-focused-entity"
 import { useWorld } from "@/hooks/use-world"
@@ -43,7 +44,7 @@ function AreaRow({ entity, focused }: { entity: Entity; focused: boolean }) {
 export function EntitySidebar() {
     const world = useWorld((s) => s.world)
     const focused = useFocusedEntity()
-    const areas = world?.entityGroups.find((group) => group.name === "Areas")?.entities ?? []
+    const areas = world?.entities.filter((entity): entity is Area<any> => entity instanceof Area) ?? []
 
     // Clear the hover outline if the world changes mid-hover, since a row's
     // onMouseLeave won't fire once it's unmounted.

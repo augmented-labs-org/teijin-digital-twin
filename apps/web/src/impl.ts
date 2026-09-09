@@ -5,7 +5,7 @@ import { Entity, type EntityState } from "./core/building/entity"
 import { PICK_PRIORITY } from "./core/building/pick-priority"
 import type { UiSchema, UiStatValue } from "./core/building/ui-schema"
 import type { StatIcon } from "./core/utils/icons"
-import { EntityGroup, World } from "./core/world"
+import { World } from "./core/world"
 
 /*
 Demo Factory — the site modelled by `public/models/demo.glb`.
@@ -206,9 +206,10 @@ class Station<S extends StatusState> extends Entity<TransformNode, S> {
         node: TransformNode,
         readonly floor: Floor,
         world: World,
+        area: Area<any>,
         private readonly specs: StatSpec<S>[],
     ) {
-        super(id, name, node, world, {} as S)
+        super(id, name, node, world, {} as S, area)
     }
 
     get building(): Building {
@@ -1022,8 +1023,8 @@ export class ImplBuilder {
         const area = <S extends StatusState>(id: string, name: string, mesh: string, color: Color3, specs: StatSpec<S>[]) =>
             new FactoryArea<S>(`area:${id}`, name, this.findMesh(mesh), floor, world, color, specs)
 
-        const station = <S extends StatusState>(id: string, name: string, node: string, specs: StatSpec<S>[]) =>
-            new Station<S>(`station:${id}`, name, this.findNode(node), floor, world, specs)
+        const station = <S extends StatusState>(id: string, name: string, node: string, area: Area<any>, specs: StatSpec<S>[]) =>
+            new Station<S>(`station:${id}`, name, this.findNode(node), floor, world, area, specs)
 
         /*
         Facilities — the offices, canteen and warehouse. No operational data.
@@ -1036,15 +1037,15 @@ export class ImplBuilder {
         */
 
         const areaWelding = area<LineState>("welding", "Welding Line", "Welding line", AREA_COLORS.welding, WELDING_STATS)
-        const welding = station<LineState>("welding", "Welding Station", "Welding station 2", WELDING_STATS)
+        const welding = station<LineState>("welding", "Welding Station", "Welding station 2", areaWelding, WELDING_STATS)
 
         /*
         Inspection line — two UR5e cells measuring in parallel.
         */
 
         const areaInspection = area<InspectionAreaState>("inspection", "Inspection Line", "Inspection line", AREA_COLORS.inspection, INSPECTION_AREA_STATS)
-        const inspection1 = station<InspectionStationState>("inspection-1", "Inspection Station 1", "Robot structure", INSPECTION_STATION_STATS)
-        const inspection2 = station<InspectionStationState>("inspection-2", "Inspection Station 2", "Robot structure.001", INSPECTION_STATION_STATS)
+        const inspection1 = station<InspectionStationState>("inspection-1", "Inspection Station 1", "Robot structure", areaInspection, INSPECTION_STATION_STATS)
+        const inspection2 = station<InspectionStationState>("inspection-2", "Inspection Station 2", "Robot structure.001", areaInspection, INSPECTION_STATION_STATS)
 
         /*
         Bottle packaging line — the bottle conveyor, its gantry and the carton
@@ -1052,7 +1053,7 @@ export class ImplBuilder {
         */
 
         const areaBottlePackaging = area<LineState>("bottle-packaging", "Bottle Packaging Line", "Bottle packaging line", AREA_COLORS.bottlePackaging, BOTTLE_PACKAGING_STATS)
-        const bottlePackaging = station<LineState>("bottle-packaging", "Bottle Packaging", "Bottle conveyor:1", BOTTLE_PACKAGING_STATS)
+        const bottlePackaging = station<LineState>("bottle-packaging", "Bottle Packaging", "Bottle conveyor:1", areaBottlePackaging, BOTTLE_PACKAGING_STATS)
 
         /*
         Final packaging line — the SCARA, the palletizing KUKA and the box and
@@ -1060,17 +1061,17 @@ export class ImplBuilder {
         */
 
         const areaFinalPackaging = area<LineState>("final-packaging", "Final Packaging Line", "Final Packaging line", AREA_COLORS.finalPackaging, FINAL_PACKAGING_STATS)
-        const finalPackaging = station<LineState>("final-packaging", "Final Packaging", "Line", FINAL_PACKAGING_STATS)
+        const finalPackaging = station<LineState>("final-packaging", "Final Packaging", "Line", areaFinalPackaging, FINAL_PACKAGING_STATS)
 
         /*
         Painting line — two UV booths into the drying and polymerization tunnels.
         */
 
         const areaPainting = area<PaintingAreaState>("painting", "Painting Line", "Painting", AREA_COLORS.painting, PAINTING_AREA_STATS)
-        const uvPainting1 = station<PaintBoothState>("uv-painting-1", "UV Painting 1", "Cabin 1", PAINT_BOOTH_STATS)
-        const uvPainting2 = station<PaintBoothState>("uv-painting-2", "UV Painting 2", "Cabin 2", PAINT_BOOTH_STATS)
-        const drying = station<TunnelState>("drying", "Drying", "Drying Tunel", tunnelStats("Drying Time"))
-        const polymerization = station<TunnelState>("polymerization", "Polymerization", "Polimerization Tunel", tunnelStats("Polymerization Time"))
+        const uvPainting1 = station<PaintBoothState>("uv-painting-1", "UV Painting 1", "Cabin 1", areaPainting, PAINT_BOOTH_STATS)
+        const uvPainting2 = station<PaintBoothState>("uv-painting-2", "UV Painting 2", "Cabin 2", areaPainting, PAINT_BOOTH_STATS)
+        const drying = station<TunnelState>("drying", "Drying", "Drying Tunel", areaPainting, tunnelStats("Drying Time"))
+        const polymerization = station<TunnelState>("polymerization", "Polymerization", "Polimerization Tunel", areaPainting, tunnelStats("Polymerization Time"))
 
         /*
         Milling line — four machines, each with its own loading robot.
@@ -1078,45 +1079,32 @@ export class ImplBuilder {
 
         const areaMilling = area<MillingAreaState>("milling", "Milling Line", "Milling line", AREA_COLORS.milling, MILLING_AREA_STATS)
         const millingStations = ["Machine", "Machine.001", "Machine.002", "Machine.003"].map((node, index) =>
-            station<MillingStationState>(`milling-${index + 1}`, `Milling Station ${index + 1}`, node, MILLING_STATION_STATS),
+            station<MillingStationState>(`milling-${index + 1}`, `Milling Station ${index + 1}`, node, areaMilling, MILLING_STATION_STATS),
         )
 
         /*
 
         */
 
-        world.entityGroups.push(new EntityGroup(world, 'Areas', [
+        world.entities.push(
             areaFacilities,
             areaWelding,
-            areaInspection,
-            areaBottlePackaging,
-            areaFinalPackaging,
-            areaPainting,
-            areaMilling,
-        ]))
-
-        world.entityGroups.push(new EntityGroup(world, 'Welding', [
             welding,
-        ]))
-
-        world.entityGroups.push(new EntityGroup(world, 'Inspection', [
+            areaInspection,
             inspection1,
             inspection2,
-        ]))
-
-        world.entityGroups.push(new EntityGroup(world, 'Packaging', [
+            areaBottlePackaging,
             bottlePackaging,
+            areaFinalPackaging,
             finalPackaging,
-        ]))
-
-        world.entityGroups.push(new EntityGroup(world, 'Painting', [
+            areaPainting,
             uvPainting1,
             uvPainting2,
             drying,
             polymerization,
-        ]))
-
-        world.entityGroups.push(new EntityGroup(world, 'Milling', millingStations))
+            areaMilling,
+            ...millingStations,
+        )
 
         /*
         The site's data. No broker in this demo — every line generates its own
